@@ -1,0 +1,8 @@
+node_modules/
+dist/
+__pycache__/
+*.pyc
+backend/freelancer_cfo.db
+.env.local
+
+stuff
