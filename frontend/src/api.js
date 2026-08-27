@@ -11,8 +11,30 @@ async function request(path, options = {}) {
   return res.json();
 }
 
+function qs(params) {
+  const clean = Object.fromEntries(Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== ""));
+  const s = new URLSearchParams(clean).toString();
+  return s ? `?${s}` : "";
+}
+
 export function getDashboard() {
   return request("/api/dashboard");
+}
+
+export function getCashflowForecast(history = 6, forecast = 6) {
+  return request(`/api/cashflow-forecast${qs({ history, forecast })}`);
+}
+
+export function getClients() {
+  return request("/api/clients");
+}
+
+export function getClientDetail(id) {
+  return request(`/api/clients/${id}`);
+}
+
+export function getInvoices({ status, search, page = 1, page_size = 5 } = {}) {
+  return request(`/api/invoices${qs({ status, search, page, page_size })}`);
 }
 
 export function sendChat(message) {
@@ -22,9 +44,17 @@ export function sendChat(message) {
   });
 }
 
-export function runSimulation(scenario, amount) {
+export function getSimulatorPresets() {
+  return request("/api/simulate/presets");
+}
+
+export function runSimulation(payload) {
   return request("/api/simulate", {
     method: "POST",
-    body: JSON.stringify({ scenario, amount }),
+    body: JSON.stringify(payload),
   });
+}
+
+export function getExpenses() {
+  return request("/api/expenses");
 }

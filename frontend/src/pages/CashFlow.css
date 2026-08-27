@@ -1,0 +1,10 @@
+.cashflow-page {
+  max-width: 980px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.cashflow-page .panel {
+  margin-bottom: 0;
+}

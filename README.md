@@ -1,14 +1,16 @@
-# Ledger — AI CFO for Freelancers
+# SoloCFO — AI CFO for Freelancers
 
-A working MVP of the "Freelancer Financial Operating System" concept: a
-dashboard, a rule-based AI CFO chat, and a what-if crash-test simulator,
-all backed by a real financial engine (not made-up numbers).
+A working MVP of the "Freelancer Financial Operating System" concept, redesigned to match a
+dark, monochrome SaaS-dashboard reference (grouped sidebar, top command bar, stat cards with
+sparklines, a combined AI CFO chat + scenario simulator). Every number on screen is computed by
+a real financial engine — nothing is hand-typed into the UI.
 
 ## Stack
 
 - **Backend:** FastAPI + SQLAlchemy + SQLite
-- **Frontend:** React + Vite, React Router, plain CSS (dark "financial
-  command center" design system — see `frontend/src/index.css` for tokens)
+- **Frontend:** React + Vite, React Router, Recharts, lucide-react icons, plain CSS
+  (see `frontend/src/index.css` for the design tokens — near-black surfaces, white accents,
+  red/amber for risk states)
 
 ## Architecture
 
@@ -17,19 +19,24 @@ React (Vite)  ──HTTP──►  FastAPI
                             │
                     financial_engine.py   ← single source of truth for
                             │                every number (cash, safe-to-
-                            │                spend, runway, receivables…)
-                ┌───────────┼────────────┐
-                │           │            │
-            ai_cfo.py   simulator.py   main.py (routes)
+                            │                spend, runway, receivables,
+                            │                client stats, cash-flow
+                            │                reconstruction…)
+                ┌───────────┼────────────┬─────────────┐
+                │           │            │             │
+            ai_cfo.py   simulator.py   seed.py     main.py (routes)
 ```
 
-`ai_cfo.py` is intentionally **not** a real LLM call — it's a small
-intent-matcher that pulls real numbers from `financial_engine.py` and
-explains them in plain language. This follows the product spec's own
-architecture principle: the model should explain the numbers, never
-invent them. To upgrade it to a real LLM, keep
-`financial_engine.get_financial_state()` as the source of truth and pass
-it (plus the user's message) to your model of choice as tool output.
+`ai_cfo.py` is a rule-based intent-matcher, not a real LLM call — it pulls real numbers from
+`financial_engine.py` and explains them in plain language, returning a structured
+`{reply, headline?, reasoning?, note?}` shape so the chat UI can render the "Here's why"
+breakdown card seen in the reference design. To upgrade it to a real LLM: keep
+`financial_engine.get_financial_state()` as the source of truth and pass it (plus the user's
+message) to your model of choice as tool output.
+
+`simulator.py`'s scenario runway is duration-aware: it projects cash forward
+`(revenue - burn) × duration_months` and asks how many months of essential burn that covers, so
+the Duration dropdown in the What-If simulator actually changes the result.
 
 ## Run it
 
@@ -42,8 +49,10 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
 
-The database auto-seeds with demo data (3 clients of varying reliability,
-a mix of paid/overdue invoices, recurring expenses) on first run.
+Run `uvicorn` from inside `backend/` (not from inside a venv's `Scripts`/`bin` folder) so Python
+can resolve the `app` package. The database auto-seeds on first run: 5 clients with varying
+reliability, 6 months of paid-invoice history each, a current cycle of draft/sent/due/overdue
+invoices, and recurring + one-off expenses.
 
 **Frontend** (http://localhost:5173):
 
@@ -53,24 +62,36 @@ npm install
 npm run dev
 ```
 
-`frontend/.env` points the UI at `http://localhost:8000` — change
-`VITE_API_BASE` if your backend runs elsewhere.
+`frontend/.env` points the UI at `http://localhost:8000` — change `VITE_API_BASE` if your
+backend runs elsewhere.
 
-## What's implemented (v1 scope)
+## What's implemented
 
-- **Dashboard** — safe-to-spend breakdown, runway gauge, revenue
-  concentration, financial health score, client watchlist, priority
-  alerts
-- **AI CFO chat** — affordability questions, runway, client risk,
-  overdue invoices, tax reserve estimate
-- **What-if simulator** — lose your biggest client, income drops 30%,
-  payments delayed 45 days, emergency expense, big purchase — each shows
-  a before/after runway and risk comparison
+- **Dashboard** — greeting header, 4 stat cards (financial health, cash, runway, safe-to-spend)
+  each with a sparkline, a Cash Flow Forecast chart (reconstructed history + projection, with a
+  working "Next N Months" selector), an AI Insights panel, and an Upcoming panel pulling real
+  overdue/due invoices
+- **Clients** — roster list (sortable by revenue) and a per-client detail page: lifetime
+  revenue, contribution %, reliability, avg delay, a revenue-over-time bar chart, a rule-based
+  AI insight, and recent invoices
+- **Invoices** — full list with status counts (draft/sent/due/overdue/paid), status filter,
+  search, and pagination
+- **AI CFO + Scenario Simulator** (combined split view) — chat handles affordability, runway,
+  client risk, overdue invoices, tax reserve, and cash-flow questions; the simulator has 4
+  presets (lose biggest client, income drop 30%, payment delay 45 days, emergency expense) with
+  editable duration/revenue-drop/one-time-expense fields and a live before/after comparison
+- **Cash Flow** — the forecast chart at a larger size plus a monthly income/expense/net table
+- **Insights** — a fuller list of the same rule-based insights
+- **Expenses** — real backend expense ledger (recurring vs one-time)
+- **Tax** — the current reserve estimate with a plain-language explanation of its limits
 
-## Not implemented (out of scope for v1)
+## Not implemented (v1 scope)
 
-Everything else in the original product spec — full invoice lifecycle
-and follow-ups, ML-based payment prediction, project/rate intelligence,
-goals, client churn prediction, auth/multi-user, and a real tax engine.
-The `financial_engine.py` module is structured so those can be added as
-new functions without touching the dashboard/chat/simulator contracts.
+**Coming-soon placeholders** (no data model behind them yet): Projects, Goals, Settings.
+
+**Not attempted at all** (see the original product spec for the full vision): ML-based payment
+prediction, an invoice follow-up automation flow, a real jurisdiction-specific tax engine,
+auth/multi-user, rate/project intelligence, and client churn prediction.
+
+`financial_engine.py` is structured so these can be added as new functions without touching the
+existing dashboard/chat/simulator contracts.

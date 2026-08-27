@@ -1,102 +1,63 @@
 from sqlalchemy.orm import Session
 from . import financial_engine as fe
 
-
-def _snapshot(db: Session, cash: float, monthly_burn: float, label_note: str = "") -> dict:
-    runway = round(cash / monthly_burn, 1) if monthly_burn > 0 else 99.0
-    return {
-        "cash": round(cash, 2),
-        "monthly_burn": round(monthly_burn, 2),
-        "runway_months": runway,
-        "note": label_note,
-    }
+PRESETS = [
+    {"id": "lose_top_client", "label": "Lose my biggest client"},
+    {"id": "income_drop_30", "label": "Income drops 30%"},
+    {"id": "payment_delay_45", "label": "Payments delayed 45 days"},
+    {"id": "emergency_expense", "label": "Sudden emergency expense"},
+]
 
 
-def run_scenario(db: Session, scenario: str, amount: float = None) -> dict:
+def get_presets(db: Session):
+    """Each preset ships sensible defaults computed from real data, so the
+    simulator opens pre-filled rather than blank."""
     state = fe.get_financial_state(db)
-    cash = state["current_cash"]
-    burn = state["monthly_burn"]
+    avg_revenue = fe.get_average_monthly_revenue(db)
+    clients = state["clients"]
+    top = max(clients, key=lambda c: c["revenue_share_pct"]) if clients else None
 
-    before = _snapshot(db, cash, burn)
-    risk_before = fe.risk_label(before["runway_months"])
+    out = []
+    for p in PRESETS:
+        if p["id"] == "lose_top_client" and top:
+            drop = round(avg_revenue * (top["revenue_share_pct"] / 100.0), 2)
+            out.append({**p, "duration_months": 6, "monthly_revenue_drop": drop, "one_time_expense": 0,
+                        "subtitle": f"{top['name']} is {top['revenue_share_pct']:.0f}% of your revenue"})
+        elif p["id"] == "income_drop_30":
+            out.append({**p, "duration_months": 6, "monthly_revenue_drop": round(avg_revenue * 0.3, 2), "one_time_expense": 0,
+                        "subtitle": "Across all clients"})
+        elif p["id"] == "payment_delay_45":
+            out.append({**p, "duration_months": 3, "monthly_revenue_drop": round(avg_revenue * 0.5, 2), "one_time_expense": 0,
+                        "subtitle": "Near-term cash gets tighter"})
+        elif p["id"] == "emergency_expense":
+            out.append({**p, "duration_months": 6, "monthly_revenue_drop": 0, "one_time_expense": round(state["monthly_burn"] * 3, 2),
+                        "subtitle": "A one-time cash hit"})
+    return out
 
-    if scenario == "lose_top_client":
-        clients = state["clients"]
-        if not clients:
-            after_cash, after_burn, explanation, label = cash, burn, "No clients on file.", "Lose top client"
-        else:
-            top = max(clients, key=lambda c: c["revenue_share_pct"])
-            revenue_loss_monthly = burn * (top["revenue_share_pct"] / 100.0) if burn else 0
-            after_cash = cash - top["total_outstanding"] * (1 - 0.5)  # assume 50% of open invoices still collected
-            after_burn = burn  # costs don't change, only income capacity - reflected via runway on remaining cash
-            label = f"Lose {top['name']} (your largest client)"
-            explanation = (
-                f"{top['name']} represents {top['revenue_share_pct']:.0f}% of your revenue. "
-                f"If they disappeared, you'd still likely collect some of their ₹{top['total_outstanding']:,.0f} "
-                f"outstanding balance, but future income from them drops to zero. "
-                f"Your monthly burn stays the same, so runway shrinks fast unless you replace that income."
-            )
 
-    elif scenario == "income_drop_30":
-        after_cash = cash  # cash today doesn't change, but future receivables shrink
-        after_burn = burn
-        # Approximate impact: reduce reliable near-term receivables by 30%, subtract shortfall from cash cushion
-        shortfall = state["reliable_receivables_30d"] * 0.30
-        after_cash = cash - shortfall
-        label = "Income drops 30%"
-        explanation = (
-            f"A 30% drop in expected income removes roughly ₹{shortfall:,.0f} from what you can safely count on "
-            f"over the next 30 days, on top of your current burn of ₹{burn:,.0f}/month."
-        )
+def run_custom_scenario(db: Session, duration_months: float, monthly_revenue_drop: float, one_time_expense: float, label: str = "Custom scenario"):
+    cash = fe.get_current_cash(db)
+    burn = fe.get_monthly_burn(db)
+    avg_revenue = fe.get_average_monthly_revenue(db)
 
-    elif scenario == "expense_shock":
-        amt = amount or 0
-        after_cash = cash - amt
-        after_burn = burn
-        label = f"₹{amt:,.0f} emergency expense"
-        explanation = (
-            f"A one-time ₹{amt:,.0f} expense comes straight out of current cash. "
-            f"Your monthly burn is unaffected, so the runway hit is purely from the lower starting cash."
-        )
+    revenue_scenario = max(0, avg_revenue - (monthly_revenue_drop or 0))
+    duration_months = duration_months or 6
 
-    elif scenario == "payment_delay_45":
-        # near-term safe cash shrinks because reliable receivables are pushed out past 30 days
-        after_cash = cash - state["reliable_receivables_30d"]
-        after_burn = burn
-        label = "Client payments delayed 45 days"
-        explanation = (
-            f"If invoices due soon slip by 45 days, the ₹{state['reliable_receivables_30d']:,.0f} you were "
-            f"counting on in the next 30 days no longer arrives on schedule, tightening your near-term cash."
-        )
+    runway_current = fe.project_runway(cash, burn, avg_revenue, duration_months)
+    runway_scenario = fe.project_runway(cash - (one_time_expense or 0), burn, revenue_scenario, duration_months)
 
-    elif scenario == "custom_purchase":
-        amt = amount or 0
-        after_cash = cash - amt
-        after_burn = burn
-        label = f"Buy something for ₹{amt:,.0f}"
-        sts = state["safe_to_spend"]
-        if amt <= sts:
-            explanation = (
-                f"This fits inside your current safe-to-spend of ₹{sts:,.0f}. "
-                f"It still lowers your buffer, so check the new runway below before committing."
-            )
-        else:
-            explanation = (
-                f"This exceeds your current safe-to-spend of ₹{sts:,.0f} by ₹{amt - sts:,.0f}. "
-                f"You'd be dipping into your tax or operating reserve to cover it."
-            )
-
-    else:
-        after_cash, after_burn, label, explanation = cash, burn, "Unknown scenario", "Scenario not recognized."
-
-    after = _snapshot(db, max(after_cash, 0), after_burn)
-    risk_after = fe.risk_label(after["runway_months"])
+    drop_pct = round(100 * (monthly_revenue_drop or 0) / avg_revenue, 1) if avg_revenue else 0
 
     return {
         "label": label,
-        "before": before,
-        "after": after,
-        "risk_before": risk_before,
-        "risk_after": risk_after,
-        "explanation": explanation,
+        "duration_months": duration_months,
+        "monthly_revenue_drop": monthly_revenue_drop or 0,
+        "revenue_drop_pct": drop_pct,
+        "one_time_expense": one_time_expense or 0,
+        "revenue_current": round(avg_revenue, 2),
+        "revenue_scenario": round(revenue_scenario, 2),
+        "runway_current": runway_current,
+        "runway_scenario": runway_scenario,
+        "risk_current": fe.risk_label(runway_current),
+        "risk_scenario": fe.risk_label(runway_scenario),
     }

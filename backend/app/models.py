@@ -29,12 +29,14 @@ class Invoice(Base):
     __tablename__ = "invoices"
 
     id = Column(Integer, primary_key=True, index=True)
+    invoice_number = Column(Integer, nullable=False)  # displayed as #1048 etc
     client_id = Column(Integer, ForeignKey("clients.id"))
     project_name = Column(String, nullable=False)
     amount = Column(Float, nullable=False)
     issue_date = Column(Date, nullable=False)
     due_date = Column(Date, nullable=False)
-    status = Column(String, default="sent")  # draft, sent, overdue, paid
+    # stored status: draft, sent, paid (due/overdue are derived from due_date at read time)
+    status = Column(String, default="sent")
     paid_date = Column(Date, nullable=True)
 
     client = relationship("Client", back_populates="invoices")

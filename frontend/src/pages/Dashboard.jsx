@@ -1,146 +1,258 @@
 import { useEffect, useState } from "react";
-import { getDashboard } from "../api.js";
-import RunwayGauge from "../components/RunwayGauge.jsx";
+import { Link } from "react-router-dom";
+import { Plus, ChevronDown, AlertCircle, Clock, Receipt } from "lucide-react";
+import {
+  ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, ReferenceLine, CartesianGrid,
+} from "recharts";
+import { getDashboard, getCashflowForecast, getInvoices } from "../api.js";
+import Sparkline from "../components/Sparkline.jsx";
 import "./Dashboard.css";
 
 const inr = (n) => `₹${Math.round(n).toLocaleString("en-IN")}`;
+const lakhs = (n) => `₹${(n / 100000).toFixed(2)}L`;
+
+const FORECAST_OPTIONS = [3, 6, 12];
 
 export default function Dashboard() {
   const [data, setData] = useState(null);
+  const [cashflow, setCashflow] = useState(null);
+  const [months, setMonths] = useState(6);
+  const [upcoming, setUpcoming] = useState({ overdue: null, due: null });
+  const [menuOpen, setMenuOpen] = useState(false);
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    getDashboard().then(setData).catch(() => setError("Couldn't reach the API. Is the backend running?"));
+    Promise.all([getDashboard(), getCashflowForecast(6, months)])
+      .then(([d, cf]) => {
+        setData(d);
+        setCashflow(cf);
+      })
+      .catch(() => setError("Couldn't reach the API. Is the backend running?"));
+  }, [months]);
+
+  useEffect(() => {
+    Promise.all([
+      getInvoices({ status: "overdue", page_size: 1 }),
+      getInvoices({ status: "due", page_size: 1 }),
+    ])
+      .then(([overdueRes, dueRes]) => {
+        setUpcoming({
+          overdue: overdueRes.invoices[0] || null,
+          due: dueRes.invoices[0] || null,
+        });
+      })
+      .catch(() => {});
   }, []);
 
   if (error) return <div className="empty-state">{error}</div>;
-  if (!data) return <div className="empty-state">Loading your ledger…</div>;
+  if (!data || !cashflow) return <div className="empty-state">Loading your dashboard…</div>;
 
-  const breakdown = [
-    { label: "Current cash", value: data.current_cash, sign: "" },
-    { label: "Upcoming essentials", value: -data.upcoming_essential_expenses, sign: "-" },
-    { label: "Tax reserve", value: -data.tax_reserve, sign: "-" },
-    { label: "Operating reserve", value: -data.operating_reserve, sign: "-" },
-    {
-      label: "Reliable receivables (30d)",
-      value: data.safe_to_spend - (data.current_cash - data.upcoming_essential_expenses - data.tax_reserve - data.operating_reserve),
-      sign: "+",
-    },
-  ];
+  const merged = buildChartSeries(cashflow);
+  const boundaryLabel = cashflow.forecast[0]
+    ? `${cashflow.forecast[0].month} · ${lakhs(cashflow.forecast[0].value)}`
+    : null;
+
+  const insights = buildInsights(data);
 
   return (
     <div className="dashboard">
-      <header className="page-header">
-        <p className="eyebrow mono">OVERVIEW · {new Date().toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}</p>
-        <h1>Where your business stands</h1>
+      <header className="dash-header">
+        <div>
+          <h1>Good morning, Priyanshu 👋</h1>
+          <p className="subtitle">Here's what's happening with your business today.</p>
+        </div>
+        <button className="btn btn-primary">
+          <Plus size={15} /> Add Income
+        </button>
       </header>
 
-      <section className="hero-row">
-        <div className="panel hero-sts">
-          <div className="panel-label">SAFE-TO-SPEND</div>
-          <div className="sts-figure mono">{inr(data.safe_to_spend)}</div>
-          <ul className="ledger-breakdown">
-            {breakdown.map((row) => (
-              <li key={row.label}>
-                <span>{row.label}</span>
-                <span className={"mono " + (row.value < 0 ? "neg" : row.value > 0 ? "pos" : "")}>
-                  {row.value < 0 ? "−" : row.value > 0 && row.sign === "+" ? "+" : ""}
-                  {inr(Math.abs(row.value))}
-                </span>
+      <section className="stat-grid">
+        <StatCard
+          label="Financial Health"
+          value={<>{data.financial_health}<span className="stat-suffix">/100</span></>}
+          sub={data.trends.health.delta_label}
+          trend={data.trends.health.trend}
+        />
+        <StatCard
+          label="Cash in Hand"
+          value={inr(data.current_cash)}
+          sub={data.trends.cash.delta_label}
+          trend={data.trends.cash.trend}
+        />
+        <StatCard
+          label="Runway"
+          value={`${data.runway_months} months`}
+          sub={data.trends.runway.delta_label}
+          trend={data.trends.runway.trend}
+        />
+        <StatCard
+          label="Safe to Spend"
+          value={inr(data.safe_to_spend)}
+          sub={data.trends.safe_to_spend.delta_label}
+          trend={data.trends.safe_to_spend.trend}
+        />
+      </section>
+
+      <section className="mid-row">
+        <div className="panel forecast-panel">
+          <div className="panel-head">
+            <h2 className="panel-title">Cash Flow Forecast</h2>
+            <div className="month-select">
+              <button className="btn btn-ghost" onClick={() => setMenuOpen((o) => !o)}>
+                Next {months} Months <ChevronDown size={13} />
+              </button>
+              {menuOpen && (
+                <div className="month-menu">
+                  {FORECAST_OPTIONS.map((m) => (
+                    <button key={m} onClick={() => { setMonths(m); setMenuOpen(false); }}>
+                      Next {m} Months
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="chart-axis-label">₹ in Lakhs</div>
+          <ResponsiveContainer width="100%" height={260}>
+            <AreaChart data={merged} margin={{ top: 10, right: 10, left: -14, bottom: 0 }}>
+              <defs>
+                <linearGradient id="actualFill" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="var(--text)" stopOpacity={0.18} />
+                  <stop offset="100%" stopColor="var(--text)" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid stroke="var(--border-soft)" vertical={false} />
+              <XAxis dataKey="month" stroke="var(--text-dim)" fontSize={11} tickLine={false} axisLine={{ stroke: "var(--border)" }} />
+              <YAxis
+                stroke="var(--text-dim)"
+                fontSize={11}
+                tickLine={false}
+                axisLine={false}
+                tickFormatter={(v) => (v / 100000).toFixed(0)}
+                width={28}
+              />
+              <Tooltip
+                contentStyle={{ background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 8, fontSize: 12 }}
+                labelStyle={{ color: "var(--text)" }}
+                formatter={(v) => [lakhs(v), "Cash"]}
+              />
+              {boundaryLabel && (
+                <ReferenceLine
+                  x={cashflow.history[cashflow.history.length - 1].month}
+                  stroke="var(--border)"
+                  strokeDasharray="3 3"
+                  label={{ value: boundaryLabel, position: "top", fill: "var(--text-muted)", fontSize: 11 }}
+                />
+              )}
+              <Area type="monotone" dataKey="actual" stroke="var(--text)" strokeWidth={1.8} fill="url(#actualFill)" connectNulls dot={false} />
+              <Area type="monotone" dataKey="forecast" stroke="var(--text-dim)" strokeWidth={1.8} strokeDasharray="4 4" fill="none" connectNulls dot={false} />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+
+        <div className="panel insights-panel">
+          <h2 className="panel-title">AI Insights</h2>
+          <ul className="insight-list">
+            {insights.map((line, i) => (
+              <li key={i}>
+                <span className="insight-dot" />
+                {line}
               </li>
             ))}
           </ul>
-        </div>
-
-        <div className="panel hero-runway">
-          <div className="panel-label">RUNWAY</div>
-          <RunwayGauge months={data.runway_months} />
-          <div className="risk-row">
-            <RiskBadge runway={data.runway_months} />
-            <span className="burn-note mono">burn ₹{Math.round(data.monthly_burn).toLocaleString("en-IN")}/mo</span>
-          </div>
+          <Link to="/insights" className="btn btn-ghost btn-block">View all insights</Link>
         </div>
       </section>
 
-      <section className="stat-grid">
-        <StatCard label="Outstanding invoices" value={inr(data.outstanding_invoices)} sub={`${data.overdue_invoice_count} overdue · ${inr(data.overdue_invoice_total)}`} tone={data.overdue_invoice_count ? "risk" : "neutral"} />
-        <StatCard label="Probability-adjusted receivables" value={inr(data.adjusted_receivables)} sub="weighted by client reliability" />
-        <StatCard label="Revenue concentration" value={`${data.revenue_concentration_pct.toFixed(0)}%`} sub={data.top_client_name || "—"} tone={data.revenue_concentration_pct >= 40 ? "risk" : "neutral"} />
-        <StatCard label="Financial health" value={`${data.financial_health}/100`} sub="composite score" tone={data.financial_health >= 70 ? "positive" : data.financial_health >= 45 ? "neutral" : "risk"} />
-      </section>
-
-      <section className="panel">
-        <div className="panel-label">CLIENT WATCHLIST</div>
-        <div className="table-wrap">
-          <table className="client-table">
-            <thead>
-              <tr>
-                <th>Client</th>
-                <th>Reliability</th>
-                <th>Avg delay</th>
-                <th>Outstanding</th>
-                <th>Adjusted</th>
-                <th>Revenue share</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.clients.map((c) => (
-                <tr key={c.id}>
-                  <td className="client-name">{c.name}</td>
-                  <td>
-                    <span className={"score-chip " + scoreTone(c.reliability_score)}>{c.reliability_score}</span>
-                  </td>
-                  <td className="mono">{c.avg_delay_days}d</td>
-                  <td className="mono">{inr(c.total_outstanding)}</td>
-                  <td className="mono">{inr(c.adjusted_receivable)}</td>
-                  <td>
-                    <div className="share-bar">
-                      <div className="share-fill" style={{ width: `${Math.min(c.revenue_share_pct, 100)}%` }} />
-                      <span className="mono share-label">{c.revenue_share_pct.toFixed(0)}%</span>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      <section className="panel upcoming-panel">
+        <h2 className="panel-title">Upcoming</h2>
+        <div className="upcoming-grid">
+          {upcoming.overdue ? (
+            <UpcomingItem
+              icon={<AlertCircle size={16} />}
+              title="Invoice overdue"
+              subtitle={`${upcoming.overdue.invoice_number} from ${upcoming.overdue.client_name}`}
+              meta={`${inr(upcoming.overdue.amount)} · overdue`}
+              action="Review"
+              to="/invoices"
+            />
+          ) : (
+            <UpcomingItem icon={<AlertCircle size={16} />} title="Invoice overdue" subtitle="Nothing overdue" meta="" action="View" to="/invoices" />
+          )}
+          {upcoming.due ? (
+            <UpcomingItem
+              icon={<Clock size={16} />}
+              title="Payment expected"
+              subtitle={`From ${upcoming.due.client_name}`}
+              meta={`${inr(upcoming.due.amount)} · due ${upcoming.due.due_date}`}
+              action="View"
+              to="/invoices"
+            />
+          ) : (
+            <UpcomingItem icon={<Clock size={16} />} title="Payment expected" subtitle="Nothing due soon" meta="" action="View" to="/invoices" />
+          )}
+          <UpcomingItem
+            icon={<Receipt size={16} />}
+            title="Expense"
+            subtitle="Recurring monthly bills"
+            meta={`${inr(data.monthly_burn)} · essentials`}
+            action="View all"
+            to="/expenses"
+          />
         </div>
       </section>
-
-      {data.alerts.length > 0 && (
-        <section className="panel">
-          <div className="panel-label">PRIORITIES</div>
-          <ol className="priorities">
-            {data.alerts.map((a, i) => (
-              <li key={i}>
-                <span className="mono priority-index">{String(i + 1).padStart(2, "0")}</span>
-                <span>{a}</span>
-              </li>
-            ))}
-          </ol>
-        </section>
-      )}
     </div>
   );
 }
 
-function scoreTone(score) {
-  if (score >= 75) return "tone-positive";
-  if (score >= 50) return "tone-neutral";
-  return "tone-risk";
+function buildChartSeries(cashflow) {
+  const rows = cashflow.history.map((h, i) => ({
+    month: h.month,
+    actual: h.value,
+    forecast: i === cashflow.history.length - 1 ? h.value : null,
+  }));
+  cashflow.forecast.forEach((f) => rows.push({ month: f.month, actual: null, forecast: f.value }));
+  return rows;
 }
 
-function RiskBadge({ runway }) {
-  const level = runway >= 6 ? "LOW" : runway >= 3 ? "MEDIUM" : "HIGH";
-  const tone = level === "LOW" ? "tone-positive" : level === "MEDIUM" ? "tone-neutral" : "tone-risk";
-  return <span className={"score-chip " + tone}>{level} RISK</span>;
+function buildInsights(data) {
+  const lines = [];
+  if (data.top_client_name) {
+    lines.push(`${data.top_client_name} contributes ${data.revenue_concentration_pct.toFixed(0)}% of your total revenue.`);
+  }
+  if (data.overdue_invoice_count > 0) {
+    lines.push(`You have ${data.overdue_invoice_count} overdue invoice${data.overdue_invoice_count > 1 ? "s" : ""} totaling ${inr(data.overdue_invoice_total)}.`);
+  } else {
+    lines.push("No overdue invoices right now — collections are on track.");
+  }
+  lines.push(`Your tax reserve for recent income is set at ${inr(data.tax_reserve)}.`);
+  lines.push(`Financial health is ${data.financial_health}/100 — ${data.trends.health.delta_label.toLowerCase()}.`);
+  return lines.slice(0, 4);
 }
 
-function StatCard({ label, value, sub, tone = "neutral" }) {
+function StatCard({ label, value, sub, trend }) {
   return (
-    <div className={"panel stat-card tone-" + tone}>
-      <div className="panel-label">{label.toUpperCase()}</div>
+    <div className="panel stat-card">
+      <div className="panel-label">{label}</div>
       <div className="stat-value mono">{value}</div>
       <div className="stat-sub">{sub}</div>
+      <div className="stat-spark">
+        <Sparkline points={trend} width={140} height={30} />
+      </div>
+    </div>
+  );
+}
+
+function UpcomingItem({ icon, title, subtitle, meta, action, to }) {
+  return (
+    <div className="upcoming-item">
+      <span className="upcoming-icon">{icon}</span>
+      <div className="upcoming-body">
+        <div className="upcoming-title">{title}</div>
+        <div className="upcoming-subtitle">{subtitle}</div>
+        {meta && <div className="upcoming-meta mono">{meta}</div>}
+      </div>
+      <Link to={to} className="upcoming-action">{action}</Link>
     </div>
   );
 }
