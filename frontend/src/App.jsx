@@ -8,6 +8,7 @@ import AICFO from "./pages/AICFO.jsx";
 import CashFlow from "./pages/CashFlow.jsx";
 import Insights from "./pages/Insights.jsx";
 import Expenses from "./pages/Expenses.jsx";
+import Loans from "./pages/Loans.jsx";
 import Tax from "./pages/Tax.jsx";
 import ComingSoon from "./pages/ComingSoon.jsx";
 
@@ -25,6 +26,7 @@ export default function App() {
         <Route path="/scenarios" element={<AICFO />} />
         <Route path="/insights" element={<Insights />} />
         <Route path="/expenses" element={<Expenses />} />
+        <Route path="/loans" element={<Loans />} />
         <Route path="/tax" element={<Tax />} />
         <Route path="/goals" element={<ComingSoon eyebrow="GOALS" title="Goals" note="Goal tracking isn't built in the v1 MVP yet — see the README for what's planned next." />} />
         <Route path="/projects" element={<ComingSoon eyebrow="PROJECTS" title="Projects" note="Project-level tracking isn't built in the v1 MVP yet — see the README for what's planned next." />} />
@@ -33,3 +35,4 @@ export default function App() {
     </Routes>
   );
 }
+

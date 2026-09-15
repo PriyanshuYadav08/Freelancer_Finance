@@ -1,6 +1,9 @@
 from pydantic import BaseModel
 from typing import List, Optional, Dict
 
+class UserCreate(BaseModel):
+  email: str
+  password: str
 
 class ClientOut(BaseModel):
     id: int
@@ -160,3 +163,101 @@ class CashflowForecastOut(BaseModel):
     history: List[CashflowPoint]
     forecast: List[CashflowPoint]
     monthly_net: List[MonthlyNet]
+
+
+# ---------------------------------------------------------------------------
+# Writes: invoices, income, clients
+# ---------------------------------------------------------------------------
+
+class InvoiceCreate(BaseModel):
+    client_id: int
+    project_name: str
+    amount: float
+    issue_date: str   # ISO date string, e.g. "2026-09-02"
+    due_date: str
+    status: str = "sent"  # draft | sent | paid
+
+
+class InvoiceStatusUpdate(BaseModel):
+    status: str  # draft | sent | paid
+    paid_date: Optional[str] = None
+
+
+class IncomeCreate(BaseModel):
+    client_id: int
+    amount: float
+    description: str = "Income"
+    date: str
+
+
+class ClientCreate(BaseModel):
+    name: str
+    pay_probability: float = 0.8
+    avg_delay_days: int = 0
+    reliability_score: int = 75
+
+
+class ClientCreated(BaseModel):
+    id: int
+    name: str
+
+
+# ---------------------------------------------------------------------------
+# Loans
+# ---------------------------------------------------------------------------
+
+class LoanCreate(BaseModel):
+    name: str
+    principal: float
+    annual_rate: float
+    tenure_months: int
+    start_date: str
+    penal_rate_monthly: float = 2.0
+
+
+class LoanMissedEmisUpdate(BaseModel):
+    missed_emis: int
+
+
+class ArrearsOut(BaseModel):
+    missed_months: int
+    missed_principal_interest: float
+    penalty_accrued: float
+    total_arrears: float
+
+
+class LoanOut(BaseModel):
+    id: int
+    name: str
+    principal: float
+    annual_rate: float
+    tenure_months: int
+    start_date: str
+    status: str
+    penal_rate_monthly: float
+    emi: float
+    months_elapsed: int
+    months_remaining: int
+    outstanding_balance: float
+    missed_emis: int
+    arrears: Optional[ArrearsOut] = None
+
+
+class LoanSimulateRequest(BaseModel):
+    missed_months: int
+    catchup_months: int = 3
+
+
+class LoanSimulateResult(BaseModel):
+    loan_id: int
+    loan_name: str
+    emi: float
+    missed_months: int
+    catchup_months: int
+    arrears: ArrearsOut
+    extra_per_month: float
+    monthly_surplus: float
+    fits_surplus: bool
+    risk: str
+    projected_arrears_if_ignored_3mo: float
+    actions: List[str]

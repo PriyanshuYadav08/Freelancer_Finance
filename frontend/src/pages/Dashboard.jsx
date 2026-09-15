@@ -6,6 +6,7 @@ import {
 } from "recharts";
 import { getDashboard, getCashflowForecast, getInvoices } from "../api.js";
 import Sparkline from "../components/Sparkline.jsx";
+import IncomeModal from "../components/IncomeModal.jsx";
 import "./Dashboard.css";
 
 const inr = (n) => `₹${Math.round(n).toLocaleString("en-IN")}`;
@@ -19,18 +20,19 @@ export default function Dashboard() {
   const [months, setMonths] = useState(6);
   const [upcoming, setUpcoming] = useState({ overdue: null, due: null });
   const [menuOpen, setMenuOpen] = useState(false);
+  const [showIncomeModal, setShowIncomeModal] = useState(false);
   const [error, setError] = useState(null);
 
-  useEffect(() => {
+  function loadDashboard() {
     Promise.all([getDashboard(), getCashflowForecast(6, months)])
       .then(([d, cf]) => {
         setData(d);
         setCashflow(cf);
       })
       .catch(() => setError("Couldn't reach the API. Is the backend running?"));
-  }, [months]);
+  }
 
-  useEffect(() => {
+  function loadUpcoming() {
     Promise.all([
       getInvoices({ status: "overdue", page_size: 1 }),
       getInvoices({ status: "due", page_size: 1 }),
@@ -42,7 +44,10 @@ export default function Dashboard() {
         });
       })
       .catch(() => {});
-  }, []);
+  }
+
+  useEffect(loadDashboard, [months]);
+  useEffect(loadUpcoming, []);
 
   if (error) return <div className="empty-state">{error}</div>;
   if (!data || !cashflow) return <div className="empty-state">Loading your dashboard…</div>;
@@ -61,10 +66,17 @@ export default function Dashboard() {
           <h1>Good morning, Priyanshu 👋</h1>
           <p className="subtitle">Here's what's happening with your business today.</p>
         </div>
-        <button className="btn btn-primary">
+        <button className="btn btn-primary" onClick={() => setShowIncomeModal(true)}>
           <Plus size={15} /> Add Income
         </button>
       </header>
+
+      {showIncomeModal && (
+        <IncomeModal
+          onClose={() => setShowIncomeModal(false)}
+          onCreated={() => { loadDashboard(); loadUpcoming(); }}
+        />
+      )}
 
       <section className="stat-grid">
         <StatCard

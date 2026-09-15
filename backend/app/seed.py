@@ -112,6 +112,17 @@ def seed():
         db.add(models.Expense(name="Conference ticket", category="professional development",
                                amount=18000, date=_add_months(today, -2), recurring=False, essential=False))
 
+        # --- loans: one under stress (matches the "missed 3 EMIs" scenario
+        # this feature is built around), one healthy for contrast ---
+        db.add(models.Loan(
+            name="Home Loan - HDFC", principal=3000000, annual_rate=7.95, tenure_months=240,
+            start_date=_add_months(today, -18), missed_emis=3, penal_rate_monthly=2.0, status="active",
+        ))
+        db.add(models.Loan(
+            name="Equipment Loan - Bajaj Finserv", principal=250000, annual_rate=11.5, tenure_months=36,
+            start_date=_add_months(today, -8), missed_emis=0, penal_rate_monthly=2.0, status="active",
+        ))
+
         db.commit()
     finally:
         db.close()

@@ -75,6 +75,14 @@
   color: var(--warn);
 }
 
+.row-actions {
+  display: flex;
+  gap: 4px;
+}
+.row-actions .btn-icon {
+  padding: 6px;
+}
+
 .empty-row {
   text-align: center;
   color: var(--text-muted);

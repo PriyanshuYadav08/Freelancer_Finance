@@ -4,5 +4,5 @@ __pycache__/
 *.pyc
 backend/freelancer_cfo.db
 .env.local
-
+.env
 stuff

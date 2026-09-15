@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, Link } from "react-router-dom";
 import { Send, MoreHorizontal } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid } from "recharts";
 import { getClientDetail } from "../api.js";
 import StatusPill from "../components/StatusPill.jsx";
+import InvoiceModal from "../components/InvoiceModal.jsx";
 import "./ClientDetail.css";
 
 const inr = (n) => `₹${Math.round(n).toLocaleString("en-IN")}`;
@@ -16,10 +17,16 @@ export default function ClientDetail() {
   const [client, setClient] = useState(null);
   const [tab, setTab] = useState("Overview");
   const [error, setError] = useState(null);
+  const [showInvoiceModal, setShowInvoiceModal] = useState(false);
+
+  function reload() {
+    getClientDetail(id).then(setClient).catch(() => setError("Couldn't load this client."));
+  }
 
   useEffect(() => {
     setClient(null);
-    getClientDetail(id).then(setClient).catch(() => setError("Couldn't load this client."));
+    reload();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
   if (error) return <div className="empty-state">{error}</div>;
@@ -40,10 +47,21 @@ export default function ClientDetail() {
           <p className="subtitle">Client since — · {lastPayment}</p>
         </div>
         <div className="cd-actions">
-          <button className="btn btn-primary"><Send size={14} /> Send Invoice</button>
+          <button className="btn btn-primary" onClick={() => setShowInvoiceModal(true)}>
+            <Send size={14} /> Send Invoice
+          </button>
           <button className="btn-icon"><MoreHorizontal size={16} /></button>
         </div>
       </header>
+
+      {showInvoiceModal && (
+        <InvoiceModal
+          presetClientId={client.id}
+          presetClientName={client.name}
+          onClose={() => setShowInvoiceModal(false)}
+          onCreated={reload}
+        />
+      )}
 
       <div className="tabs">
         {TABS.map((t) => (
@@ -92,7 +110,7 @@ export default function ClientDetail() {
           <section className="panel">
             <div className="panel-head">
               <h2 className="panel-title">Recent Invoices</h2>
-              <span className="link-muted">View all invoices</span>
+              <Link to={`/invoices?search=${encodeURIComponent(client.name)}`} className="link-muted">View all invoices</Link>
             </div>
             <div className="table-wrap">
               <table className="data-table">

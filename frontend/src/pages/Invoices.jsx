@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
-import { Search, Plus, ChevronLeft, ChevronRight } from "lucide-react";
-import { getInvoices } from "../api.js";
+import { useSearchParams } from "react-router-dom";
+import { Search, Plus, ChevronLeft, ChevronRight, Check, Trash2 } from "lucide-react";
+import { getInvoices, updateInvoiceStatus, deleteInvoice } from "../api.js";
 import StatusPill from "../components/StatusPill.jsx";
+import InvoiceModal from "../components/InvoiceModal.jsx";
 import "./Invoices.css";
 
 const inr = (n) => `₹${Math.round(n).toLocaleString("en-IN")}`;
@@ -17,17 +19,22 @@ const STATUS_FILTERS = [
 ];
 
 export default function Invoices() {
+  const [searchParams] = useSearchParams();
   const [status, setStatus] = useState("all");
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(searchParams.get("search") || "");
   const [page, setPage] = useState(1);
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
+  const [showNewInvoice, setShowNewInvoice] = useState(false);
+  const [busyId, setBusyId] = useState(null);
 
-  useEffect(() => {
+  function reload() {
     getInvoices({ status: status === "all" ? undefined : status, search: search || undefined, page, page_size: PAGE_SIZE })
       .then(setData)
       .catch(() => setError("Couldn't reach the API. Is the backend running?"));
-  }, [status, search, page]);
+  }
+
+  useEffect(reload, [status, search, page]);
 
   function handleStatusChange(value) {
     setStatus(value);
@@ -37,6 +44,30 @@ export default function Invoices() {
   function handleSearchChange(value) {
     setSearch(value);
     setPage(1);
+  }
+
+  async function handleMarkPaid(id) {
+    setBusyId(id);
+    try {
+      await updateInvoiceStatus(id, { status: "paid", paid_date: new Date().toISOString().slice(0, 10) });
+      reload();
+    } catch {
+      // silently ignore - row simply won't update
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function handleDelete(id) {
+    setBusyId(id);
+    try {
+      await deleteInvoice(id);
+      reload();
+    } catch {
+      // ignore
+    } finally {
+      setBusyId(null);
+    }
   }
 
   if (error) return <div className="empty-state">{error}</div>;
@@ -61,9 +92,15 @@ export default function Invoices() {
             <Search size={14} />
             <input placeholder="Search invoices..." value={search} onChange={(e) => handleSearchChange(e.target.value)} />
           </div>
-          <button className="btn btn-primary"><Plus size={14} /> New Invoice</button>
+          <button className="btn btn-primary" onClick={() => setShowNewInvoice(true)}>
+            <Plus size={14} /> New Invoice
+          </button>
         </div>
       </header>
+
+      {showNewInvoice && (
+        <InvoiceModal onClose={() => setShowNewInvoice(false)} onCreated={reload} />
+      )}
 
       <div className="count-strip">
         <CountBox label="Draft" value={counts.draft} />
@@ -85,6 +122,7 @@ export default function Invoices() {
                 <th>Issued</th>
                 <th>Due</th>
                 <th>Paid On</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
@@ -97,10 +135,32 @@ export default function Invoices() {
                   <td>{inv.issue_date}</td>
                   <td>{inv.due_date}</td>
                   <td>{inv.paid_date || "—"}</td>
+                  <td>
+                    <div className="row-actions">
+                      {inv.status !== "paid" && (
+                        <button
+                          className="btn-icon"
+                          title="Mark paid"
+                          disabled={busyId === inv.id}
+                          onClick={() => handleMarkPaid(inv.id)}
+                        >
+                          <Check size={14} />
+                        </button>
+                      )}
+                      <button
+                        className="btn-icon"
+                        title="Delete"
+                        disabled={busyId === inv.id}
+                        onClick={() => handleDelete(inv.id)}
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  </td>
                 </tr>
               ))}
               {data && data.invoices.length === 0 && (
-                <tr><td colSpan={7} className="empty-row">No invoices match this filter.</td></tr>
+                <tr><td colSpan={8} className="empty-row">No invoices match this filter.</td></tr>
               )}
             </tbody>
           </table>

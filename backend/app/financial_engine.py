@@ -1,10 +1,3 @@
-"""
-Financial Engine
-================
-Every number shown to the user, or handed to the AI CFO / simulator, is
-computed here from raw ledger data. The AI layer explains these numbers,
-it never invents them - see ai_cfo.py.
-"""
 import calendar
 import random
 from datetime import date, timedelta
@@ -16,14 +9,53 @@ TAX_RATE = 0.15          # simplified flat estimate - NOT tax advice
 OPERATING_RESERVE_RATE = 0.08
 
 
-def _account(db: Session) -> models.Account:
-    acct = db.query(models.Account).first()
+def _account(db: Session, user_id: int) -> models.Account:
+    acct = db.query(models.Account).filter(models.Account.user_id == user_id).first()
     if acct is None:
-        acct = models.Account(current_cash=0.0)
+        acct = models.Account(user_id=user_id, current_cash=0.0)
         db.add(acct)
         db.commit()
         db.refresh(acct)
     return acct
+
+def create_invoice(db: Session, user_id: int, client_id: int, project_name: str, amount: float,
+                   issue_date: date, due_date: date, status: str = "sent") -> dict:
+    client = db.query(models.Client).filter(models.Client.id == client_id, models.Client.user_id == user_id).first()
+    if not client: return None
+    
+    inv = models.Invoice(
+        user_id=user_id, client_id=client_id, project_name=project_name, 
+        amount=amount, issue_date=issue_date, due_date=due_date, status=status,
+        paid_date=(due_date if status == "paid" else None),
+    )
+    
+    # NEW: Increment cash immediately if logged as paid
+    if status == "paid":
+        acct = _account(db, user_id)
+        acct.current_cash += amount
+
+    db.add(inv)
+    db.commit()
+    db.refresh(inv)
+    return _invoice_out(inv)
+
+def update_invoice_status(db: Session, user_id: int, invoice_id: int, status: str, paid_date: date = None) -> dict:
+    inv = db.query(models.Invoice).filter(models.Invoice.id == invoice_id, models.Invoice.user_id == user_id).first()
+    if not inv: return None
+
+    # NEW: Adjust cash based on status toggle
+    acct = _account(db, user_id)
+    if status == "paid" and inv.status != "paid":
+        acct.current_cash += inv.amount
+        inv.paid_date = paid_date or date.today()
+    elif status != "paid" and inv.status == "paid":
+        acct.current_cash -= inv.amount
+        inv.paid_date = None
+
+    inv.status = status
+    db.commit()
+    db.refresh(inv)
+    return _invoice_out(inv)
 
 
 def get_current_cash(db: Session) -> float:
@@ -66,12 +98,42 @@ def get_adjusted_receivables(db: Session) -> float:
 
 
 def get_monthly_burn(db: Session) -> float:
-    """Approximate monthly essential burn from recurring essential expenses."""
+    """Approximate monthly essential burn from recurring essential expenses
+    plus EMIs on any active loans (a loan payment is essential burn)."""
     expenses = db.query(models.Expense).filter(
         models.Expense.recurring == True,  # noqa: E712
         models.Expense.essential == True,  # noqa: E712
     ).all()
-    return round(sum(e.amount for e in expenses), 2)
+    return round(sum(e.amount for e in expenses) + get_total_loan_emi(db), 2)
+
+
+def calc_emi(principal: float, annual_rate: float, tenure_months: int) -> float:
+    """Standard reducing-balance EMI formula."""
+    if tenure_months <= 0:
+        return round(principal, 2)
+    r = (annual_rate / 12.0) / 100.0
+    if r == 0:
+        return round(principal / tenure_months, 2)
+    factor = (1 + r) ** tenure_months
+    emi = principal * r * factor / (factor - 1)
+    return round(emi, 2)
+
+
+def calc_outstanding_balance(principal: float, annual_rate: float, tenure_months: int, months_paid: int) -> float:
+    """Reducing balance after `months_paid` on-schedule EMIs."""
+    months_paid = max(0, min(months_paid, tenure_months))
+    r = (annual_rate / 12.0) / 100.0
+    if r == 0:
+        return round(max(0.0, principal - (principal / tenure_months) * months_paid), 2)
+    factor_n = (1 + r) ** tenure_months
+    factor_k = (1 + r) ** months_paid
+    balance = principal * (factor_n - factor_k) / (factor_n - 1)
+    return round(max(0.0, balance), 2)
+
+
+def get_total_loan_emi(db: Session) -> float:
+    loans = db.query(models.Loan).filter(models.Loan.status == "active").all()
+    return round(sum(calc_emi(l.principal, l.annual_rate, l.tenure_months) for l in loans), 2)
 
 
 def get_upcoming_essential_expenses(db: Session, days: int = 30) -> float:
@@ -197,6 +259,11 @@ def get_alerts(db: Session):
     tax_reserve = get_tax_reserve(db)
     if tax_reserve > 0:
         alerts.append(f"Reserve roughly ₹{tax_reserve:,.0f} for taxes on income received in the last 30 days.")
+
+    for loan in db.query(models.Loan).filter(models.Loan.status == "active", models.Loan.missed_emis > 0).all():
+        emi = calc_emi(loan.principal, loan.annual_rate, loan.tenure_months)
+        arrears = round(emi * loan.missed_emis, 2)
+        alerts.append(f"{loan.missed_emis} missed EMI(s) on \"{loan.name}\" - at least ₹{arrears:,.0f} in arrears is accruing penalty interest.")
 
     return alerts
 
@@ -569,3 +636,78 @@ def get_sparkline(db: Session, metric: str, current_value: float, points: int = 
     walk.reverse()
     walk[-1] = current_value
     return [round(v, 2) for v in walk]
+
+
+# ---------------------------------------------------------------------------
+# Writes: invoices, income, clients
+# ---------------------------------------------------------------------------
+
+def _next_invoice_number(db: Session) -> int:
+    highest = db.query(models.Invoice).order_by(models.Invoice.invoice_number.desc()).first()
+    return (highest.invoice_number + 1) if highest else 1001
+
+
+def create_invoice(db: Session, client_id: int, project_name: str, amount: float,
+                    issue_date: date, due_date: date, status: str = "sent") -> dict:
+    client = db.query(models.Client).filter(models.Client.id == client_id).first()
+    if not client:
+        return None
+    inv = models.Invoice(
+        invoice_number=_next_invoice_number(db),
+        client_id=client_id,
+        project_name=project_name,
+        amount=amount,
+        issue_date=issue_date,
+        due_date=due_date,
+        status=status,
+        paid_date=(due_date if status == "paid" else None),
+    )
+    db.add(inv)
+    db.commit()
+    db.refresh(inv)
+    return _invoice_out(inv)
+
+
+def create_income(db: Session, client_id: int, amount: float, description: str, received_date: date) -> dict:
+    """Ad-hoc income logging - recorded as an already-paid invoice so it
+    flows through every calculation (cash, revenue history, tax reserve)
+    the same way a collected invoice does."""
+    return create_invoice(
+        db, client_id, description or "Income", amount,
+        issue_date=received_date, due_date=received_date, status="paid",
+    )
+
+
+def update_invoice_status(db: Session, invoice_id: int, status: str, paid_date: date = None) -> dict:
+    inv = db.query(models.Invoice).filter(models.Invoice.id == invoice_id).first()
+    if not inv:
+        return None
+    inv.status = status
+    if status == "paid":
+        inv.paid_date = paid_date or date.today()
+    else:
+        inv.paid_date = None
+    db.commit()
+    db.refresh(inv)
+    return _invoice_out(inv)
+
+
+def delete_invoice(db: Session, invoice_id: int) -> bool:
+    inv = db.query(models.Invoice).filter(models.Invoice.id == invoice_id).first()
+    if not inv:
+        return False
+    db.delete(inv)
+    db.commit()
+    return True
+
+
+def create_client(db: Session, name: str, pay_probability: float = 0.8,
+                   avg_delay_days: int = 0, reliability_score: int = 75) -> models.Client:
+    client = models.Client(
+        name=name, pay_probability=pay_probability,
+        avg_delay_days=avg_delay_days, reliability_score=reliability_score,
+    )
+    db.add(client)
+    db.commit()
+    db.refresh(client)
+    return client
