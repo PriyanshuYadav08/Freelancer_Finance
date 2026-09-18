@@ -1,6 +1,7 @@
 import calendar
 import random
 from datetime import date, timedelta
+from typing import Optional
 from sqlalchemy.orm import Session
 
 from . import models
@@ -9,8 +10,11 @@ TAX_RATE = 0.15          # simplified flat estimate - NOT tax advice
 OPERATING_RESERVE_RATE = 0.08
 
 
-def _account(db: Session, user_id: int) -> models.Account:
-    acct = db.query(models.Account).filter(models.Account.user_id == user_id).first()
+def _account(db: Session, user_id: Optional[int] = None) -> models.Account:
+    if user_id is not None:
+        acct = db.query(models.Account).filter(models.Account.user_id == user_id).first()
+    else:
+        acct = db.query(models.Account).first()
     if acct is None:
         acct = models.Account(user_id=user_id, current_cash=0.0)
         db.add(acct)
@@ -18,59 +22,29 @@ def _account(db: Session, user_id: int) -> models.Account:
         db.refresh(acct)
     return acct
 
-def create_invoice(db: Session, user_id: int, client_id: int, project_name: str, amount: float,
-                   issue_date: date, due_date: date, status: str = "sent") -> dict:
-    client = db.query(models.Client).filter(models.Client.id == client_id, models.Client.user_id == user_id).first()
-    if not client: return None
-    
-    inv = models.Invoice(
-        user_id=user_id, client_id=client_id, project_name=project_name, 
-        amount=amount, issue_date=issue_date, due_date=due_date, status=status,
-        paid_date=(due_date if status == "paid" else None),
-    )
-    
-    # NEW: Increment cash immediately if logged as paid
-    if status == "paid":
-        acct = _account(db, user_id)
-        acct.current_cash += amount
 
-    db.add(inv)
-    db.commit()
-    db.refresh(inv)
-    return _invoice_out(inv)
-
-def update_invoice_status(db: Session, user_id: int, invoice_id: int, status: str, paid_date: date = None) -> dict:
-    inv = db.query(models.Invoice).filter(models.Invoice.id == invoice_id, models.Invoice.user_id == user_id).first()
-    if not inv: return None
-
-    # NEW: Adjust cash based on status toggle
-    acct = _account(db, user_id)
-    if status == "paid" and inv.status != "paid":
-        acct.current_cash += inv.amount
-        inv.paid_date = paid_date or date.today()
-    elif status != "paid" and inv.status == "paid":
-        acct.current_cash -= inv.amount
-        inv.paid_date = None
-
-    inv.status = status
-    db.commit()
-    db.refresh(inv)
-    return _invoice_out(inv)
+def get_current_cash(db: Session, user_id: Optional[int] = None) -> float:
+    return _account(db, user_id).current_cash
 
 
-def get_current_cash(db: Session) -> float:
-    return _account(db).current_cash
+def get_outstanding_invoices(db: Session, user_id: Optional[int] = None):
+    q = db.query(models.Invoice).filter(models.Invoice.status != "paid")
+    if user_id is not None:
+        q = q.filter(models.Invoice.user_id == user_id)
+    return q.all()
 
 
-def get_outstanding_invoices(db: Session):
-    return db.query(models.Invoice).filter(models.Invoice.status != "paid").all()
-
-
-def get_client_totals(db: Session):
+def get_client_totals(db: Session, user_id: Optional[int] = None):
     """Per-client outstanding + probability-adjusted receivable + revenue share."""
-    clients = db.query(models.Client).all()
-    invoices = get_outstanding_invoices(db)
-    all_invoices = db.query(models.Invoice).all()
+    q_clients = db.query(models.Client)
+    q_all_invoices = db.query(models.Invoice)
+    if user_id is not None:
+        q_clients = q_clients.filter(models.Client.user_id == user_id)
+        q_all_invoices = q_all_invoices.filter(models.Invoice.user_id == user_id)
+
+    clients = q_clients.all()
+    invoices = get_outstanding_invoices(db, user_id=user_id)
+    all_invoices = q_all_invoices.all()
 
     total_all_time = sum(i.amount for i in all_invoices) or 1.0
 
@@ -93,18 +67,21 @@ def get_client_totals(db: Session):
     return out
 
 
-def get_adjusted_receivables(db: Session) -> float:
-    return round(sum(c["adjusted_receivable"] for c in get_client_totals(db)), 2)
+def get_adjusted_receivables(db: Session, user_id: Optional[int] = None) -> float:
+    return round(sum(c["adjusted_receivable"] for c in get_client_totals(db, user_id=user_id)), 2)
 
 
-def get_monthly_burn(db: Session) -> float:
+def get_monthly_burn(db: Session, user_id: Optional[int] = None) -> float:
     """Approximate monthly essential burn from recurring essential expenses
     plus EMIs on any active loans (a loan payment is essential burn)."""
-    expenses = db.query(models.Expense).filter(
+    q_expenses = db.query(models.Expense).filter(
         models.Expense.recurring == True,  # noqa: E712
         models.Expense.essential == True,  # noqa: E712
-    ).all()
-    return round(sum(e.amount for e in expenses) + get_total_loan_emi(db), 2)
+    )
+    if user_id is not None:
+        q_expenses = q_expenses.filter(models.Expense.user_id == user_id)
+    expenses = q_expenses.all()
+    return round(sum(e.amount for e in expenses) + get_total_loan_emi(db, user_id=user_id), 2)
 
 
 def calc_emi(principal: float, annual_rate: float, tenure_months: int) -> float:
@@ -131,49 +108,48 @@ def calc_outstanding_balance(principal: float, annual_rate: float, tenure_months
     return round(max(0.0, balance), 2)
 
 
-def get_total_loan_emi(db: Session) -> float:
-    loans = db.query(models.Loan).filter(models.Loan.status == "active").all()
+def get_total_loan_emi(db: Session, user_id: Optional[int] = None) -> float:
+    q = db.query(models.Loan).filter(models.Loan.status == "active")
+    if user_id is not None:
+        q = q.filter(models.Loan.user_id == user_id)
+    loans = q.all()
     return round(sum(calc_emi(l.principal, l.annual_rate, l.tenure_months) for l in loans), 2)
 
 
-def get_upcoming_essential_expenses(db: Session, days: int = 30) -> float:
-    """Recurring essential burn scaled to the window, used in safe-to-spend."""
-    monthly = get_monthly_burn(db)
+def get_upcoming_essential_expenses(db: Session, days: int = 30, user_id: Optional[int] = None) -> float:
+    monthly = get_monthly_burn(db, user_id=user_id)
     return round(monthly * (days / 30.0), 2)
 
 
-def get_tax_reserve(db: Session) -> float:
-    """Simplified estimate: a flat rate held against income received in the
-    last 30 days plus receivables likely to land in the next 30. This is a
-    planning heuristic, not tax advice - a real deployment should replace
-    this with a jurisdiction-specific deterministic tax engine."""
+def get_tax_reserve(db: Session, user_id: Optional[int] = None) -> float:
     today = date.today()
-    recent_paid = db.query(models.Invoice).filter(
+    q = db.query(models.Invoice).filter(
         models.Invoice.status == "paid",
         models.Invoice.paid_date >= today - timedelta(days=30),
-    ).all()
+    )
+    if user_id is not None:
+        q = q.filter(models.Invoice.user_id == user_id)
+    recent_paid = q.all()
     recent_income = sum(i.amount for i in recent_paid)
     return round(recent_income * TAX_RATE, 2)
 
 
-def get_operating_reserve(db: Session) -> float:
-    return round(get_monthly_burn(db) * OPERATING_RESERVE_RATE, 2)
+def get_operating_reserve(db: Session, user_id: Optional[int] = None) -> float:
+    return round(get_monthly_burn(db, user_id=user_id) * OPERATING_RESERVE_RATE, 2)
 
 
-def get_safe_to_spend(db: Session) -> float:
-    cash = get_current_cash(db)
-    upcoming = get_upcoming_essential_expenses(db)
-    tax = get_tax_reserve(db)
-    op_reserve = get_operating_reserve(db)
-    reliable_soon = get_reliable_receivables_due_soon(db, days=30)
+def get_safe_to_spend(db: Session, user_id: Optional[int] = None) -> float:
+    cash = get_current_cash(db, user_id=user_id)
+    upcoming = get_upcoming_essential_expenses(db, days=30, user_id=user_id)
+    tax = get_tax_reserve(db, user_id=user_id)
+    op_reserve = get_operating_reserve(db, user_id=user_id)
+    reliable_soon = get_reliable_receivables_due_soon(db, days=30, user_id=user_id)
     return round(cash - upcoming - tax - op_reserve + reliable_soon, 2)
 
 
-def get_reliable_receivables_due_soon(db: Session, days: int = 30) -> float:
-    """Probability-adjusted receivables due within `days`, only counting
-    clients with a decent pay probability so shaky money isn't spent."""
+def get_reliable_receivables_due_soon(db: Session, days: int = 30, user_id: Optional[int] = None) -> float:
     today = date.today()
-    invoices = get_outstanding_invoices(db)
+    invoices = get_outstanding_invoices(db, user_id=user_id)
     total = 0.0
     for inv in invoices:
         if inv.due_date <= today + timedelta(days=days) and inv.client.pay_probability >= 0.6:
@@ -181,47 +157,49 @@ def get_reliable_receivables_due_soon(db: Session, days: int = 30) -> float:
     return round(total, 2)
 
 
-def get_runway_months(db: Session, cash_override: float = None) -> float:
-    burn = get_monthly_burn(db)
-    cash = get_current_cash(db) if cash_override is None else cash_override
+def get_runway_months(db: Session, cash_override: float = None, user_id: Optional[int] = None) -> float:
+    burn = get_monthly_burn(db, user_id=user_id)
+    cash = get_current_cash(db, user_id=user_id) if cash_override is None else cash_override
     if burn <= 0:
         return 99.0
     return round(cash / burn, 1)
 
 
-def get_revenue_concentration(db: Session):
-    totals = get_client_totals(db)
+def get_revenue_concentration(db: Session, user_id: Optional[int] = None):
+    totals = get_client_totals(db, user_id=user_id)
     if not totals:
         return 0.0, None
     top = max(totals, key=lambda c: c["revenue_share_pct"])
     return top["revenue_share_pct"], top["name"]
 
 
-def get_overdue_invoices(db: Session):
+def get_overdue_invoices(db: Session, user_id: Optional[int] = None):
     today = date.today()
-    return db.query(models.Invoice).filter(
+    q = db.query(models.Invoice).filter(
         models.Invoice.status != "paid",
         models.Invoice.due_date < today,
-    ).all()
+    )
+    if user_id is not None:
+        q = q.filter(models.Invoice.user_id == user_id)
+    return q.all()
 
 
-def get_financial_health(db: Session) -> int:
-    """0-100 composite score from five weighted sub-scores."""
-    runway = get_runway_months(db)
-    runway_score = min(100, runway / 6.0 * 100)  # 6mo+ = full marks
+def get_financial_health(db: Session, user_id: Optional[int] = None) -> int:
+    runway = get_runway_months(db, user_id=user_id)
+    runway_score = min(100, runway / 6.0 * 100)
 
-    concentration_pct, _ = get_revenue_concentration(db)
-    concentration_score = max(0, 100 - concentration_pct)  # lower concentration = better
+    concentration_pct, _ = get_revenue_concentration(db, user_id=user_id)
+    concentration_score = max(0, 100 - concentration_pct)
 
-    clients = get_client_totals(db)
+    clients = get_client_totals(db, user_id=user_id)
     avg_reliability = (sum(c["reliability_score"] for c in clients) / len(clients)) if clients else 80
 
-    overdue_total = sum(i.amount for i in get_overdue_invoices(db))
-    outstanding_total = sum(i.amount for i in get_outstanding_invoices(db)) or 1.0
+    overdue_total = sum(i.amount for i in get_overdue_invoices(db, user_id=user_id))
+    outstanding_total = sum(i.amount for i in get_outstanding_invoices(db, user_id=user_id)) or 1.0
     overdue_penalty = max(0, 100 - 100 * (overdue_total / outstanding_total))
 
-    sts = get_safe_to_spend(db)
-    cash = get_current_cash(db) or 1.0
+    sts = get_safe_to_spend(db, user_id=user_id)
+    cash = get_current_cash(db, user_id=user_id) or 1.0
     liquidity_score = max(0, min(100, 100 * sts / cash))
 
     weights = {
@@ -241,26 +219,29 @@ def get_financial_health(db: Session) -> int:
     return round(score)
 
 
-def get_alerts(db: Session):
+def get_alerts(db: Session, user_id: Optional[int] = None):
     alerts = []
-    overdue = get_overdue_invoices(db)
+    overdue = get_overdue_invoices(db, user_id=user_id)
     for inv in overdue:
         days_late = (date.today() - inv.due_date).days
         alerts.append(f"₹{inv.amount:,.0f} invoice for \"{inv.project_name}\" is {days_late} days overdue.")
 
-    concentration_pct, top_name = get_revenue_concentration(db)
+    concentration_pct, top_name = get_revenue_concentration(db, user_id=user_id)
     if concentration_pct >= 40 and top_name:
         alerts.append(f"{top_name} accounts for {concentration_pct:.0f}% of your revenue - concentration risk.")
 
-    runway = get_runway_months(db)
+    runway = get_runway_months(db, user_id=user_id)
     if runway < 3:
         alerts.append(f"Runway is {runway} months - below the 3-month safety line.")
 
-    tax_reserve = get_tax_reserve(db)
+    tax_reserve = get_tax_reserve(db, user_id=user_id)
     if tax_reserve > 0:
         alerts.append(f"Reserve roughly ₹{tax_reserve:,.0f} for taxes on income received in the last 30 days.")
 
-    for loan in db.query(models.Loan).filter(models.Loan.status == "active", models.Loan.missed_emis > 0).all():
+    q_loans = db.query(models.Loan).filter(models.Loan.status == "active", models.Loan.missed_emis > 0)
+    if user_id is not None:
+        q_loans = q_loans.filter(models.Loan.user_id == user_id)
+    for loan in q_loans.all():
         emi = calc_emi(loan.principal, loan.annual_rate, loan.tenure_months)
         arrears = round(emi * loan.missed_emis, 2)
         alerts.append(f"{loan.missed_emis} missed EMI(s) on \"{loan.name}\" - at least ₹{arrears:,.0f} in arrears is accruing penalty interest.")
@@ -276,13 +257,11 @@ def get_health_label(score: int) -> str:
     return "Needs attention"
 
 
-def get_trends(db: Session) -> dict:
-    """Sparkline + delta text for the four dashboard stat cards. See
-    get_sparkline() for what is and isn't a real tracked figure here."""
-    cash = get_current_cash(db)
-    runway = get_runway_months(db)
-    health = get_financial_health(db)
-    sts = get_safe_to_spend(db)
+def get_trends(db: Session, user_id: Optional[int] = None) -> dict:
+    cash = get_current_cash(db, user_id=user_id)
+    runway = get_runway_months(db, user_id=user_id)
+    health = get_financial_health(db, user_id=user_id)
+    sts = get_safe_to_spend(db, user_id=user_id)
 
     cash_spark = get_sparkline(db, "cash", cash)
     runway_spark = get_sparkline(db, "runway", runway)
@@ -292,8 +271,6 @@ def get_trends(db: Session) -> dict:
     prev_cash = cash_spark[-2] if len(cash_spark) > 1 and cash_spark[-2] else cash or 1
     cash_delta_pct = round(100 * (cash_spark[-1] - prev_cash) / prev_cash, 1) + 0.0
     runway_delta = round(runway_spark[-1] - runway_spark[-2], 1) + 0.0 if len(runway_spark) > 1 else 0.0
-    cash_delta_pct = abs(cash_delta_pct) if cash_delta_pct == 0 else cash_delta_pct
-    runway_delta = abs(runway_delta) if runway_delta == 0 else runway_delta
 
     return {
         "cash": {"trend": cash_spark, "delta_label": f"{'+' if cash_delta_pct >= 0 else ''}{cash_delta_pct}% vs last month"},
@@ -303,30 +280,29 @@ def get_trends(db: Session) -> dict:
     }
 
 
-def get_financial_state(db: Session) -> dict:
-    """Single snapshot object - this is what the AI CFO and simulator both read."""
-    clients = get_client_totals(db)
-    concentration_pct, top_client = get_revenue_concentration(db)
-    overdue = get_overdue_invoices(db)
+def get_financial_state(db: Session, user_id: Optional[int] = None) -> dict:
+    clients = get_client_totals(db, user_id=user_id)
+    concentration_pct, top_client = get_revenue_concentration(db, user_id=user_id)
+    overdue = get_overdue_invoices(db, user_id=user_id)
     return {
-        "current_cash": get_current_cash(db),
-        "outstanding_invoices": round(sum(i.amount for i in get_outstanding_invoices(db)), 2),
-        "adjusted_receivables": get_adjusted_receivables(db),
-        "reliable_receivables_30d": get_reliable_receivables_due_soon(db, 30),
-        "upcoming_essential_expenses": get_upcoming_essential_expenses(db),
-        "tax_reserve": get_tax_reserve(db),
-        "operating_reserve": get_operating_reserve(db),
-        "safe_to_spend": get_safe_to_spend(db),
-        "monthly_burn": get_monthly_burn(db),
-        "runway_months": get_runway_months(db),
+        "current_cash": get_current_cash(db, user_id=user_id),
+        "outstanding_invoices": round(sum(i.amount for i in get_outstanding_invoices(db, user_id=user_id)), 2),
+        "adjusted_receivables": get_adjusted_receivables(db, user_id=user_id),
+        "reliable_receivables_30d": get_reliable_receivables_due_soon(db, 30, user_id=user_id),
+        "upcoming_essential_expenses": get_upcoming_essential_expenses(db, user_id=user_id),
+        "tax_reserve": get_tax_reserve(db, user_id=user_id),
+        "operating_reserve": get_operating_reserve(db, user_id=user_id),
+        "safe_to_spend": get_safe_to_spend(db, user_id=user_id),
+        "monthly_burn": get_monthly_burn(db, user_id=user_id),
+        "runway_months": get_runway_months(db, user_id=user_id),
         "revenue_concentration_pct": concentration_pct,
         "top_client_name": top_client,
-        "financial_health": get_financial_health(db),
+        "financial_health": get_financial_health(db, user_id=user_id),
         "overdue_invoice_count": len(overdue),
         "overdue_invoice_total": round(sum(i.amount for i in overdue), 2),
         "clients": clients,
-        "alerts": get_alerts(db),
-        "trends": get_trends(db),
+        "alerts": get_alerts(db, user_id=user_id),
+        "trends": get_trends(db, user_id=user_id),
     }
 
 
@@ -338,13 +314,7 @@ def risk_label(runway: float) -> str:
     return "HIGH"
 
 
-# ---------------------------------------------------------------------------
-# Invoice status, client list/detail, revenue history, cash-flow forecast
-# ---------------------------------------------------------------------------
-
 def invoice_display_status(inv: models.Invoice, today: date = None) -> str:
-    """Draft/paid are stored as-is; sent invoices are shown as 'due' once
-    within 7 days of their due date, or 'overdue' once past it."""
     today = today or date.today()
     if inv.status in ("draft", "paid"):
         return inv.status
@@ -367,37 +337,36 @@ def _add_months(d: date, n: int) -> date:
     return date(year, month, day)
 
 
-def get_average_monthly_revenue(db: Session, months: int = 3) -> float:
-    """Average paid-invoice income over the last N months - the 'ongoing
-    business revenue' figure used by the scenario simulator (separate from
-    the conservative, income-excluding runway shown on the dashboard)."""
+def get_average_monthly_revenue(db: Session, months: int = 3, user_id: Optional[int] = None) -> float:
     today = date.today()
     start = _add_months(today, -months)
-    paid = db.query(models.Invoice).filter(
+    q = db.query(models.Invoice).filter(
         models.Invoice.status == "paid",
         models.Invoice.paid_date >= start,
-    ).all()
+    )
+    if user_id is not None:
+        q = q.filter(models.Invoice.user_id == user_id)
+    paid = q.all()
     total = sum(i.amount for i in paid)
     return round(total / months, 2) if months else round(total, 2)
 
 
 def project_runway(cash: float, monthly_burn: float, monthly_revenue: float, duration_months: float) -> float:
-    """Projects cash forward `duration_months` at (revenue - burn) per
-    month, then asks how many months of essential burn that projected pile
-    covers. This is the what-if simulator's headline number - it responds
-    to the scenario's revenue change AND to how long you let it run,
-    unlike the dashboard's single-point-in-time cash/burn runway."""
     projected_cash = max(0.0, cash + (monthly_revenue - monthly_burn) * duration_months)
     if monthly_burn <= 0:
         return 36.0
     return round(min(projected_cash / monthly_burn, 60.0), 1)
 
 
-def get_client_list(db: Session):
-    """Client roster with lifetime revenue, contribution %, reliability,
-    average delay, and a simple active/inactive status."""
-    clients = db.query(models.Client).all()
-    all_invoices = db.query(models.Invoice).all()
+def get_client_list(db: Session, user_id: Optional[int] = None):
+    q_clients = db.query(models.Client)
+    q_all_invoices = db.query(models.Invoice)
+    if user_id is not None:
+        q_clients = q_clients.filter(models.Client.user_id == user_id)
+        q_all_invoices = q_all_invoices.filter(models.Invoice.user_id == user_id)
+
+    clients = q_clients.all()
+    all_invoices = q_all_invoices.all()
     total_lifetime = sum(i.amount for i in all_invoices if i.status == "paid") or 1.0
     today = date.today()
 
@@ -422,34 +391,39 @@ def get_client_list(db: Session):
     return sorted(out, key=lambda c: c["lifetime_revenue"], reverse=True)
 
 
-def get_client_revenue_over_time(db: Session, client_id: int, months: int = 6):
+def get_client_revenue_over_time(db: Session, client_id: int, months: int = 6, user_id: Optional[int] = None):
     today = date.today()
     buckets = []
     for i in range(months - 1, -1, -1):
         m_date = _add_months(today, -i)
         buckets.append({"month": _month_label(m_date), "year": m_date.year, "mon": m_date.month, "total": 0.0})
 
-    paid = db.query(models.Invoice).filter(
+    q = db.query(models.Invoice).filter(
         models.Invoice.client_id == client_id,
         models.Invoice.status == "paid",
-    ).all()
+    )
+    if user_id is not None:
+        q = q.filter(models.Invoice.user_id == user_id)
+    paid = q.all()
     for inv in paid:
         for b in buckets:
-            if inv.paid_date.year == b["year"] and inv.paid_date.month == b["mon"]:
+            if inv.paid_date and inv.paid_date.year == b["year"] and inv.paid_date.month == b["mon"]:
                 b["total"] += inv.amount
     return [{"month": b["month"], "revenue": round(b["total"], 2)} for b in buckets]
 
 
-def get_client_detail(db: Session, client_id: int):
-    client = db.query(models.Client).filter(models.Client.id == client_id).first()
+def get_client_detail(db: Session, client_id: int, user_id: Optional[int] = None):
+    q_client = db.query(models.Client).filter(models.Client.id == client_id)
+    if user_id is not None:
+        q_client = q_client.filter(models.Client.user_id == user_id)
+    client = q_client.first()
     if not client:
         return None
-    roster_entry = next((c for c in get_client_list(db) if c["id"] == client_id), None)
+    roster_entry = next((c for c in get_client_list(db, user_id=user_id) if c["id"] == client_id), None)
     invoices = db.query(models.Invoice).filter(models.Invoice.client_id == client_id).order_by(
         models.Invoice.issue_date.desc()
     ).all()
 
-    # simple rule-based insight, grounded in the client's own numbers
     if client.avg_delay_days >= 14:
         insight = (
             f"Payment times for {client.name} average {client.avg_delay_days} days late. "
@@ -472,7 +446,7 @@ def get_client_detail(db: Session, client_id: int):
         "revenue_contribution_pct": roster_entry["revenue_contribution_pct"] if roster_entry else 0,
         "reliability_score": client.reliability_score,
         "avg_delay_days": client.avg_delay_days,
-        "revenue_over_time": get_client_revenue_over_time(db, client_id),
+        "revenue_over_time": get_client_revenue_over_time(db, client_id, user_id=user_id),
         "ai_insight": insight,
         "invoices": [_invoice_out(i) for i in invoices],
     }
@@ -483,7 +457,7 @@ def _invoice_out(inv: models.Invoice):
         "id": inv.id,
         "invoice_number": f"#{inv.invoice_number}",
         "client_id": inv.client_id,
-        "client_name": inv.client.name,
+        "client_name": inv.client.name if inv.client else "Unknown",
         "project_name": inv.project_name,
         "amount": inv.amount,
         "status": invoice_display_status(inv),
@@ -493,8 +467,11 @@ def _invoice_out(inv: models.Invoice):
     }
 
 
-def get_invoice_list(db: Session, status: str = None, search: str = None, page: int = 1, page_size: int = 5):
-    invoices = db.query(models.Invoice).order_by(models.Invoice.issue_date.desc()).all()
+def get_invoice_list(db: Session, status: str = None, search: str = None, page: int = 1, page_size: int = 5, user_id: Optional[int] = None):
+    q = db.query(models.Invoice)
+    if user_id is not None:
+        q = q.filter(models.Invoice.user_id == user_id)
+    invoices = q.order_by(models.Invoice.issue_date.desc()).all()
     display = [_invoice_out(i) for i in invoices]
 
     counts = {"draft": 0, "sent": 0, "due": 0, "overdue": 0, "paid": 0}
@@ -505,8 +482,8 @@ def get_invoice_list(db: Session, status: str = None, search: str = None, page: 
     if status and status != "all":
         filtered = [d for d in filtered if d["status"] == status]
     if search:
-        q = search.lower()
-        filtered = [d for d in filtered if q in d["client_name"].lower() or q in d["invoice_number"].lower() or q in d["project_name"].lower()]
+        query_str = search.lower()
+        filtered = [d for d in filtered if query_str in d["client_name"].lower() or query_str in d["invoice_number"].lower() or query_str in d["project_name"].lower()]
 
     total = len(filtered)
     start = (page - 1) * page_size
@@ -521,25 +498,27 @@ def get_invoice_list(db: Session, status: str = None, search: str = None, page: 
     }
 
 
-def get_monthly_net_history(db: Session, months: int = 6):
-    """Income minus expenses per month, most recent `months` months."""
+def get_monthly_net_history(db: Session, months: int = 6, user_id: Optional[int] = None):
     today = date.today()
     buckets = []
     for i in range(months - 1, -1, -1):
         m_date = _add_months(today, -i)
         buckets.append({"month": _month_label(m_date), "year": m_date.year, "mon": m_date.month, "income": 0.0, "expense": 0.0})
 
-    paid = db.query(models.Invoice).filter(models.Invoice.status == "paid").all()
+    q_paid = db.query(models.Invoice).filter(models.Invoice.status == "paid")
+    if user_id is not None:
+        q_paid = q_paid.filter(models.Invoice.user_id == user_id)
+    paid = q_paid.all()
     for inv in paid:
         for b in buckets:
             if inv.paid_date and inv.paid_date.year == b["year"] and inv.paid_date.month == b["mon"]:
                 b["income"] += inv.amount
 
-    # Recurring essential costs repeat identically every month (one template
-    # row per bill, not one row per occurrence) - so every bucket carries the
-    # same recurring burn, plus whatever one-off expenses landed that month.
-    recurring_burn = get_monthly_burn(db)
-    one_offs = db.query(models.Expense).filter(models.Expense.recurring == False).all()  # noqa: E712
+    recurring_burn = get_monthly_burn(db, user_id=user_id)
+    q_one_offs = db.query(models.Expense).filter(models.Expense.recurring == False)  # noqa: E712
+    if user_id is not None:
+        q_one_offs = q_one_offs.filter(models.Expense.user_id == user_id)
+    one_offs = q_one_offs.all()
     for b in buckets:
         b["expense"] = recurring_burn
     for e in one_offs:
@@ -550,19 +529,9 @@ def get_monthly_net_history(db: Session, months: int = 6):
     return [{"month": b["month"], "income": round(b["income"], 2), "expense": round(b["expense"], 2), "net": round(b["income"] - b["expense"], 2)} for b in buckets]
 
 
-def get_cashflow_forecast(db: Session, history_months: int = 6, forecast_months: int = 6):
-    """Historical end-of-month cash balance, walked backward from today's
-    actual cash, plus a forward projection using the recent average net.
-
-    This app doesn't keep a daily cash ledger, so the historical *balance*
-    line is reconstructed rather than recorded: real monthly net
-    (income - expenses) sets the shape (which months were up or down), but
-    the swing is bounded to a plausible fraction of today's real cash so a
-    couple of unusually large invoices can't walk the reconstruction into
-    an implausible negative balance six months ago. Today's cash and the
-    forecast (which is not bounded) are the real, current numbers."""
-    history_net = get_monthly_net_history(db, history_months)
-    current_cash = get_current_cash(db)
+def get_cashflow_forecast(db: Session, history_months: int = 6, forecast_months: int = 6, user_id: Optional[int] = None):
+    history_net = get_monthly_net_history(db, history_months, user_id=user_id)
+    current_cash = get_current_cash(db, user_id=user_id)
 
     total_swing = sum(e["net"] for e in history_net)
     max_swing = current_cash * 0.5
@@ -590,27 +559,11 @@ def get_cashflow_forecast(db: Session, history_months: int = 6, forecast_months:
     return {"history": history, "forecast": forecast, "monthly_net": history_net}
 
 
-def get_next_reliable_receivable(db: Session):
-    """Soonest outstanding invoice from a client reliable enough to plan
-    around (pay_probability >= 0.6) - used by the AI CFO to point at a
-    concrete reason cash will loosen up soon."""
-    today = date.today()
-    candidates = [
-        inv for inv in get_outstanding_invoices(db)
-        if inv.client.pay_probability >= 0.6 and inv.due_date >= today
-    ]
-    if not candidates:
-        return None
-    soonest = min(candidates, key=lambda i: i.due_date)
-    return {
-        "client_name": soonest.client.name,
-        "amount": soonest.amount,
-        "days_until_due": (soonest.due_date - today).days,
-    }
-
-
-def get_expense_list(db: Session):
-    expenses = db.query(models.Expense).order_by(models.Expense.date.desc()).all()
+def get_expense_list(db: Session, user_id: Optional[int] = None):
+    q = db.query(models.Expense)
+    if user_id is not None:
+        q = q.filter(models.Expense.user_id == user_id)
+    expenses = q.order_by(models.Expense.date.desc()).all()
     return [{
         "id": e.id,
         "name": e.name,
@@ -623,11 +576,6 @@ def get_expense_list(db: Session):
 
 
 def get_sparkline(db: Session, metric: str, current_value: float, points: int = 7):
-    """Illustrative recent-trend line for dashboard stat cards. Not a
-    tracked time series (this app doesn't snapshot daily) - it's a
-    deterministic, seeded wiggle ending exactly at the real current value,
-    purely so the card isn't a bare flat number. The card's displayed
-    number and delta text are the real figures; this just shades the trend."""
     rng = random.Random(hash(metric) % (2**32))
     walk = [current_value]
     for _ in range(points - 1):
@@ -638,22 +586,25 @@ def get_sparkline(db: Session, metric: str, current_value: float, points: int = 
     return [round(v, 2) for v in walk]
 
 
-# ---------------------------------------------------------------------------
-# Writes: invoices, income, clients
-# ---------------------------------------------------------------------------
-
-def _next_invoice_number(db: Session) -> int:
-    highest = db.query(models.Invoice).order_by(models.Invoice.invoice_number.desc()).first()
+def _next_invoice_number(db: Session, user_id: Optional[int] = None) -> int:
+    q = db.query(models.Invoice)
+    if user_id is not None:
+        q = q.filter(models.Invoice.user_id == user_id)
+    highest = q.order_by(models.Invoice.invoice_number.desc()).first()
     return (highest.invoice_number + 1) if highest else 1001
 
 
 def create_invoice(db: Session, client_id: int, project_name: str, amount: float,
-                    issue_date: date, due_date: date, status: str = "sent") -> dict:
-    client = db.query(models.Client).filter(models.Client.id == client_id).first()
+                    issue_date: date, due_date: date, status: str = "sent", user_id: Optional[int] = None) -> dict:
+    q_client = db.query(models.Client).filter(models.Client.id == client_id)
+    if user_id is not None:
+        q_client = q_client.filter(models.Client.user_id == user_id)
+    client = q_client.first()
     if not client:
         return None
     inv = models.Invoice(
-        invoice_number=_next_invoice_number(db),
+        user_id=user_id,
+        invoice_number=_next_invoice_number(db, user_id=user_id),
         client_id=client_id,
         project_name=project_name,
         amount=amount,
@@ -663,37 +614,50 @@ def create_invoice(db: Session, client_id: int, project_name: str, amount: float
         paid_date=(due_date if status == "paid" else None),
     )
     db.add(inv)
+
+    if status == "paid":
+        acct = _account(db, user_id=user_id)
+        acct.current_cash += amount
+
     db.commit()
     db.refresh(inv)
     return _invoice_out(inv)
 
 
-def create_income(db: Session, client_id: int, amount: float, description: str, received_date: date) -> dict:
-    """Ad-hoc income logging - recorded as an already-paid invoice so it
-    flows through every calculation (cash, revenue history, tax reserve)
-    the same way a collected invoice does."""
+def create_income(db: Session, client_id: int, amount: float, description: str, received_date: date, user_id: Optional[int] = None) -> dict:
     return create_invoice(
         db, client_id, description or "Income", amount,
-        issue_date=received_date, due_date=received_date, status="paid",
+        issue_date=received_date, due_date=received_date, status="paid", user_id=user_id,
     )
 
 
-def update_invoice_status(db: Session, invoice_id: int, status: str, paid_date: date = None) -> dict:
-    inv = db.query(models.Invoice).filter(models.Invoice.id == invoice_id).first()
+def update_invoice_status(db: Session, invoice_id: int, status: str, paid_date: date = None, user_id: Optional[int] = None) -> dict:
+    q = db.query(models.Invoice).filter(models.Invoice.id == invoice_id)
+    if user_id is not None:
+        q = q.filter(models.Invoice.user_id == user_id)
+    inv = q.first()
     if not inv:
         return None
-    inv.status = status
-    if status == "paid":
+
+    acct = _account(db, user_id=user_id)
+    if status == "paid" and inv.status != "paid":
+        acct.current_cash += inv.amount
         inv.paid_date = paid_date or date.today()
-    else:
+    elif status != "paid" and inv.status == "paid":
+        acct.current_cash -= inv.amount
         inv.paid_date = None
+
+    inv.status = status
     db.commit()
     db.refresh(inv)
     return _invoice_out(inv)
 
 
-def delete_invoice(db: Session, invoice_id: int) -> bool:
-    inv = db.query(models.Invoice).filter(models.Invoice.id == invoice_id).first()
+def delete_invoice(db: Session, invoice_id: int, user_id: Optional[int] = None) -> bool:
+    q = db.query(models.Invoice).filter(models.Invoice.id == invoice_id)
+    if user_id is not None:
+        q = q.filter(models.Invoice.user_id == user_id)
+    inv = q.first()
     if not inv:
         return False
     db.delete(inv)
@@ -702,8 +666,9 @@ def delete_invoice(db: Session, invoice_id: int) -> bool:
 
 
 def create_client(db: Session, name: str, pay_probability: float = 0.8,
-                   avg_delay_days: int = 0, reliability_score: int = 75) -> models.Client:
+                   avg_delay_days: int = 0, reliability_score: int = 75, user_id: Optional[int] = None) -> models.Client:
     client = models.Client(
+        user_id=user_id,
         name=name, pay_probability=pay_probability,
         avg_delay_days=avg_delay_days, reliability_score=reliability_score,
     )

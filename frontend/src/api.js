@@ -1,17 +1,27 @@
 const BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
 
 async function request(path, options = {}) {
+  const token = localStorage.getItem("solocfo_token");
+  const headers = {
+    "Content-Type": "application/json",
+    ...(options.headers || {}),
+  };
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+
   const res = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json" },
     ...options,
+    headers,
   });
+
   if (!res.ok) {
     let detail = `Request failed: ${res.status}`;
     try {
       const body = await res.json();
       if (body?.detail) detail = body.detail;
     } catch {
-      // ignore - use default message
+      // ignore
     }
     throw new Error(detail);
   }
@@ -23,6 +33,43 @@ function qs(params) {
   const clean = Object.fromEntries(Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== ""));
   const s = new URLSearchParams(clean).toString();
   return s ? `?${s}` : "";
+}
+
+export async function loginUser(email, password) {
+  const body = new URLSearchParams();
+  body.append("username", email);
+  body.append("password", password);
+
+  const res = await fetch(`${BASE}/api/auth/login`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body,
+  });
+
+  if (!res.ok) {
+    let detail = "Invalid credentials";
+    try {
+      const err = await res.json();
+      if (err?.detail) detail = err.detail;
+    } catch {
+      // ignore
+    }
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
+export function signupUser(email, password) {
+  return request("/api/auth/signup", {
+    method: "POST",
+    body: JSON.stringify({ email, password }),
+  });
+}
+
+export function getMe() {
+  return request("/api/auth/me");
 }
 
 export function getDashboard() {

@@ -5,6 +5,7 @@ import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, ReferenceLine, CartesianGrid,
 } from "recharts";
 import { getDashboard, getCashflowForecast, getInvoices } from "../api.js";
+import { useAuth } from "../context/AuthContext.jsx";
 import Sparkline from "../components/Sparkline.jsx";
 import IncomeModal from "../components/IncomeModal.jsx";
 import "./Dashboard.css";
@@ -15,6 +16,8 @@ const lakhs = (n) => `₹${(n / 100000).toFixed(2)}L`;
 const FORECAST_OPTIONS = [3, 6, 12];
 
 export default function Dashboard() {
+  const { user } = useAuth();
+  const userName = user?.email ? user.email.split("@")[0] : "Freelancer";
   const [data, setData] = useState(null);
   const [cashflow, setCashflow] = useState(null);
   const [months, setMonths] = useState(6);
@@ -63,7 +66,8 @@ export default function Dashboard() {
     <div className="dashboard">
       <header className="dash-header">
         <div>
-          <h1>Good morning, Priyanshu 👋</h1>
+          <h1>Welcome back, {userName} 👋</h1>
+
           <p className="subtitle">Here's what's happening with your business today.</p>
         </div>
         <button className="btn btn-primary" onClick={() => setShowIncomeModal(true)}>

@@ -1,9 +1,10 @@
-import { NavLink, Outlet, useLocation } from "react-router-dom";
+import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import {
   LayoutDashboard, Wallet, Users, FolderKanban, FileText,
   Sparkles, LineChart, FlaskConical, Lightbulb,
-  Receipt, Percent, Target, Landmark, Settings, Search, Bell, ChevronDown,
+  Receipt, Percent, Target, Landmark, Settings, Search, Bell, LogOut,
 } from "lucide-react";
+import { useAuth } from "../context/AuthContext.jsx";
 import "./Layout.css";
 
 const NAV_GROUPS = [
@@ -48,7 +49,17 @@ function currentEyebrow(pathname) {
 
 export default function Layout() {
   const location = useLocation();
+  const navigate = useNavigate();
+  const { user, logout } = useAuth();
   const eyebrow = currentEyebrow(location.pathname);
+
+  const initial = user?.email ? user.email.charAt(0).toUpperCase() : "F";
+  const displayName = user?.email ? user.email.split("@")[0] : "Freelancer";
+
+  const handleLogout = () => {
+    logout();
+    navigate("/welcome");
+  };
 
   return (
     <div className="shell">
@@ -63,8 +74,8 @@ export default function Layout() {
           <button className="btn-icon" aria-label="Notifications">
             <Bell size={16} />
           </button>
-          <button className="avatar-btn" aria-label="Account">
-            <span className="avatar-circle">P</span>
+          <button className="avatar-btn" aria-label="Account" title={user?.email || "Account"}>
+            <span className="avatar-circle">{initial}</span>
           </button>
         </div>
       </header>
@@ -100,13 +111,13 @@ export default function Layout() {
               <Settings size={16} strokeWidth={1.8} />
               <span>Settings</span>
             </NavLink>
-            <div className="profile-row">
-              <span className="avatar-circle small">P</span>
+            <div className="profile-row" onClick={handleLogout} style={{ cursor: "pointer" }} title="Click to log out">
+              <span className="avatar-circle small">{initial}</span>
               <div className="profile-text">
-                <div className="profile-name">Priyanshu</div>
-                <div className="profile-role">Freelancer</div>
+                <div className="profile-name">{displayName}</div>
+                <div className="profile-role">Log Out</div>
               </div>
-              <ChevronDown size={14} color="var(--text-dim)" />
+              <LogOut size={14} color="var(--text-dim)" />
             </div>
           </div>
         </aside>

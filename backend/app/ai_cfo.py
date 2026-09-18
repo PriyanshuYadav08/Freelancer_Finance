@@ -1,26 +1,11 @@
-"""
-AI CFO
-======
-Deterministic intent-matching + the financial engine, wrapped in natural
-language. This mirrors the architecture principle from the product spec:
-the model should EXPLAIN numbers, never invent them.
-
-Responses are shaped as {reply, headline?, reasoning?, note?}. When
-headline/reasoning are present the frontend renders a structured card;
-otherwise it just shows `reply` as plain text.
-
-To upgrade this to a real LLM: keep get_financial_state() as the source of
-truth, pass it plus the user's message to your model of choice, and have it
-generate the reply text using the shipped numbers as tool output.
-"""
 import re
+from typing import Optional
 from sqlalchemy.orm import Session
 
 from . import financial_engine as fe
 
 
-def _extract_amount(text: str) -> float:
-    """Pulls the first rupee amount out of free text, handling k/L/lakh suffixes."""
+def _extract_amount(text: str) -> Optional[float]:
     text = text.lower().replace(",", "")
     m = re.search(r"(?:rs\.?|inr|₹)?\s*(\d+(?:\.\d+)?)\s*(l|lakh|lac|k)?", text)
     if not m:
@@ -34,18 +19,17 @@ def _extract_amount(text: str) -> float:
     return value
 
 
-def answer(db: Session, message: str) -> dict:
+def answer(db: Session, message: str, user_id: Optional[int] = None) -> dict:
     msg = message.lower()
-    state = fe.get_financial_state(db)
+    state = fe.get_financial_state(db, user_id=user_id)
 
-    # --- affordability / purchase questions ---
     if any(w in msg for w in ["afford", "buy", "spend", "purchase", "vacation", "laptop", "trip"]):
         amount = _extract_amount(msg)
         if amount:
             sts = state["safe_to_spend"]
             runway_before = state["runway_months"]
             cash_after = max(0, state["current_cash"] - amount)
-            runway_after = fe.get_runway_months(db, cash_override=cash_after)
+            runway_after = fe.get_runway_months(db, cash_override=cash_after, user_id=user_id)
             next_receivable = fe.get_next_reliable_receivable(db)
 
             fits = amount <= sts
@@ -80,7 +64,6 @@ def answer(db: Session, message: str) -> dict:
             f"Tell me an amount (e.g. \"can I afford a ₹80k laptop\") and I'll run the numbers."
         )}
 
-    # --- runway ---
     if "runway" in msg or "survive" in msg or "how long" in msg:
         runway = state["runway_months"]
         risk = fe.risk_label(runway)
@@ -92,7 +75,6 @@ def answer(db: Session, message: str) -> dict:
         )
         return {"reply": reply}
 
-    # --- client risk / concentration ---
     if "client" in msg and ("risk" in msg or "concentration" in msg or "reliable" in msg or "reliability" in msg or "risky" in msg):
         clients = sorted(state["clients"], key=lambda c: c["revenue_share_pct"], reverse=True)
         if not clients:
@@ -110,7 +92,6 @@ def answer(db: Session, message: str) -> dict:
         )
         return {"reply": reply}
 
-    # --- overdue invoices ---
     if "overdue" in msg or "unpaid" in msg or "invoice" in msg:
         if state["overdue_invoice_count"] == 0:
             reply = "No overdue invoices right now. Nice."
@@ -122,7 +103,6 @@ def answer(db: Session, message: str) -> dict:
             )
         return {"reply": reply}
 
-    # --- tax ---
     if "tax" in msg:
         reply = (
             f"Based on income received in the last 30 days, I'd set aside roughly "
@@ -131,7 +111,6 @@ def answer(db: Session, message: str) -> dict:
         )
         return {"reply": reply}
 
-    # --- cash flow falling / general health ---
     if "falling" in msg or "cash flow" in msg or "cashflow" in msg:
         reply = (
             f"Cash is at ₹{state['current_cash']:,.0f} against a monthly burn of "
@@ -143,7 +122,6 @@ def answer(db: Session, message: str) -> dict:
             reply += "Nothing overdue right now, so this is mostly a pacing issue rather than a collections one."
         return {"reply": reply}
 
-    # --- default: daily briefing ---
     reply = (
         f"Good morning. Here's where things stand:\n\n"
         f"Cash: ₹{state['current_cash']:,.0f}\n"

@@ -4,13 +4,11 @@ Loan Engine
 Standard reducing-balance EMI math, plus a missed-payment consequence
 simulator. Every figure here is a deterministic formula or a clearly
 labeled assumption (penal rate, catch-up window) - there is no LLM
-involved in these numbers. The "what to do" text at the end is generic
-financial-literacy guidance grounded in the numbers actually computed,
-not personalized professional advice - see the disclaimer returned with
-every simulation result.
+involved in these numbers.
 """
 import calendar
 from datetime import date
+from typing import Optional
 from sqlalchemy.orm import Session
 
 from . import models
@@ -55,10 +53,6 @@ def get_loan_summary(db: Session, loan: models.Loan) -> dict:
 
 
 def calc_arrears(emi: float, missed_months: int, penal_rate_monthly: float) -> dict:
-    """Missed principal+interest plus accrued penal interest. Penalty is
-    modeled as a triangular accrual: the k-th missed EMI has been overdue
-    for k months by today (worst case - nothing paid toward it since), so
-    it has accrued k months of penal interest at `penal_rate_monthly`%."""
     missed_principal_interest = round(emi * missed_months, 2)
     rate = penal_rate_monthly / 100.0
     penalty = round(emi * rate * (missed_months * (missed_months + 1) / 2), 2)
@@ -70,19 +64,14 @@ def calc_arrears(emi: float, missed_months: int, penal_rate_monthly: float) -> d
     }
 
 
-def simulate_missed_emis(db: Session, loan: models.Loan, missed_months: int, catchup_months: int) -> dict:
-    """The core 'what happens if I miss N EMIs, and how do I stop it from
-    snowballing' calculation. Compares the extra monthly payment needed to
-    clear arrears in `catchup_months` against the freelancer's real
-    monthly surplus (average revenue minus essential burn, which already
-    includes this loan's EMI)."""
+def simulate_missed_emis(db: Session, loan: models.Loan, missed_months: int, catchup_months: int, user_id: Optional[int] = None) -> dict:
     emi = fe.calc_emi(loan.principal, loan.annual_rate, loan.tenure_months)
     arrears = calc_arrears(emi, missed_months, loan.penal_rate_monthly)
     catchup_months = max(1, catchup_months)
     extra_per_month = round(arrears["total_arrears"] / catchup_months, 2)
 
-    avg_revenue = fe.get_average_monthly_revenue(db)
-    monthly_burn = fe.get_monthly_burn(db)  # already includes this loan's EMI, see financial_engine
+    avg_revenue = fe.get_average_monthly_revenue(db, user_id=user_id)
+    monthly_burn = fe.get_monthly_burn(db, user_id=user_id)
     monthly_surplus = round(avg_revenue - monthly_burn, 2)
 
     fits_surplus = extra_per_month <= monthly_surplus
@@ -93,8 +82,6 @@ def simulate_missed_emis(db: Session, loan: models.Loan, missed_months: int, cat
     else:
         risk = "HIGH"
 
-    # if nothing is paid toward arrears, penalty compounds monthly - show
-    # what 3 more months of inaction would look like as a concrete warning
     projected_if_ignored = round(
         arrears["total_arrears"] * ((1 + loan.penal_rate_monthly / 100.0) ** 3), 2
     )
@@ -142,23 +129,26 @@ def simulate_missed_emis(db: Session, loan: models.Loan, missed_months: int, cat
     }
 
 
-# ---------------------------------------------------------------------------
-# CRUD
-# ---------------------------------------------------------------------------
-
-def list_loans(db: Session):
-    loans = db.query(models.Loan).order_by(models.Loan.start_date.desc()).all()
+def list_loans(db: Session, user_id: Optional[int] = None):
+    q = db.query(models.Loan)
+    if user_id is not None:
+        q = q.filter(models.Loan.user_id == user_id)
+    loans = q.order_by(models.Loan.start_date.desc()).all()
     return [get_loan_summary(db, l) for l in loans]
 
 
-def get_loan(db: Session, loan_id: int):
-    loan = db.query(models.Loan).filter(models.Loan.id == loan_id).first()
+def get_loan(db: Session, loan_id: int, user_id: Optional[int] = None):
+    q = db.query(models.Loan).filter(models.Loan.id == loan_id)
+    if user_id is not None:
+        q = q.filter(models.Loan.user_id == user_id)
+    loan = q.first()
     return get_loan_summary(db, loan) if loan else None
 
 
 def create_loan(db: Session, name: str, principal: float, annual_rate: float,
-                 tenure_months: int, start_date: date, penal_rate_monthly: float = 2.0) -> dict:
+                 tenure_months: int, start_date: date, penal_rate_monthly: float = 2.0, user_id: Optional[int] = None) -> dict:
     loan = models.Loan(
+        user_id=user_id,
         name=name, principal=principal, annual_rate=annual_rate,
         tenure_months=tenure_months, start_date=start_date,
         penal_rate_monthly=penal_rate_monthly, missed_emis=0, status="active",
@@ -169,8 +159,11 @@ def create_loan(db: Session, name: str, principal: float, annual_rate: float,
     return get_loan_summary(db, loan)
 
 
-def set_missed_emis(db: Session, loan_id: int, missed_emis: int) -> dict:
-    loan = db.query(models.Loan).filter(models.Loan.id == loan_id).first()
+def set_missed_emis(db: Session, loan_id: int, missed_emis: int, user_id: Optional[int] = None) -> dict:
+    q = db.query(models.Loan).filter(models.Loan.id == loan_id)
+    if user_id is not None:
+        q = q.filter(models.Loan.user_id == user_id)
+    loan = q.first()
     if not loan:
         return None
     loan.missed_emis = max(0, missed_emis)
@@ -179,8 +172,11 @@ def set_missed_emis(db: Session, loan_id: int, missed_emis: int) -> dict:
     return get_loan_summary(db, loan)
 
 
-def delete_loan(db: Session, loan_id: int) -> bool:
-    loan = db.query(models.Loan).filter(models.Loan.id == loan_id).first()
+def delete_loan(db: Session, loan_id: int, user_id: Optional[int] = None) -> bool:
+    q = db.query(models.Loan).filter(models.Loan.id == loan_id)
+    if user_id is not None:
+        q = q.filter(models.Loan.user_id == user_id)
+    loan = q.first()
     if not loan:
         return False
     db.delete(loan)
