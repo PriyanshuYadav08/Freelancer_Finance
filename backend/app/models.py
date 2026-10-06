@@ -11,6 +11,18 @@ class User(Base):
     hashed_password = Column(String, nullable=False)
 
 
+class UserSettings(Base):
+    __tablename__ = "user_settings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), unique=True, nullable=False)
+    business_name = Column(String, default="Solo Business")
+    currency_symbol = Column(String, default="₹")
+    tax_rate_pct = Column(Float, default=15.0)
+    target_buffer_months = Column(Float, default=6.0)
+    target_hourly_rate = Column(Float, default=1500.0)
+
+
 class Account(Base):
     """Holds a user's current liquid cash."""
     __tablename__ = "account"
@@ -31,6 +43,36 @@ class Client(Base):
     reliability_score = Column(Float, default=5.0)
 
     invoices = relationship("Invoice", back_populates="client")
+    projects = relationship("Project", back_populates="client")
+
+
+class Project(Base):
+    __tablename__ = "projects"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=True)
+    name = Column(String, nullable=False)
+    budget = Column(Float, default=0.0)
+    hours_logged = Column(Float, default=0.0)
+    target_hourly_rate = Column(Float, default=1500.0)
+    status = Column(String, default="in_progress")  # in_progress | completed | on_hold
+    deadline = Column(Date, nullable=True)
+
+    client = relationship("Client", back_populates="projects")
+    invoices = relationship("Invoice", back_populates="project")
+
+
+class Goal(Base):
+    __tablename__ = "goals"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    name = Column(String, nullable=False)
+    category = Column(String, default="emergency_fund")  # emergency_fund | equipment | annual_revenue | tax_cushion | custom
+    target_amount = Column(Float, nullable=False)
+    current_amount = Column(Float, default=0.0)
+    target_date = Column(Date, nullable=True)
 
 
 class Invoice(Base):
@@ -40,6 +82,7 @@ class Invoice(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     invoice_number = Column(Integer, nullable=False)
     client_id = Column(Integer, ForeignKey("clients.id"))
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=True)
     project_name = Column(String, nullable=False)
     amount = Column(Float, nullable=False)
     issue_date = Column(Date, nullable=False)
@@ -48,6 +91,7 @@ class Invoice(Base):
     paid_date = Column(Date, nullable=True)
 
     client = relationship("Client", back_populates="invoices")
+    project = relationship("Project", back_populates="invoices")
 
 
 class Expense(Base):

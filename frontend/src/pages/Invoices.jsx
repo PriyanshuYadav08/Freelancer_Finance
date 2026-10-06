@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Search, Plus, ChevronLeft, ChevronRight, Check, Trash2 } from "lucide-react";
+import { Search, Plus, ChevronLeft, ChevronRight, Check, Trash2, Mail } from "lucide-react";
 import { getInvoices, updateInvoiceStatus, deleteInvoice } from "../api.js";
 import StatusPill from "../components/StatusPill.jsx";
 import InvoiceModal from "../components/InvoiceModal.jsx";
+import InvoiceFollowUpModal from "../components/InvoiceFollowUpModal.jsx";
 import "./Invoices.css";
 
 const inr = (n) => `₹${Math.round(n).toLocaleString("en-IN")}`;
@@ -26,6 +27,7 @@ export default function Invoices() {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [showNewInvoice, setShowNewInvoice] = useState(false);
+  const [followUpInvoice, setFollowUpInvoice] = useState(null);
   const [busyId, setBusyId] = useState(null);
 
   function reload() {
@@ -138,14 +140,23 @@ export default function Invoices() {
                   <td>
                     <div className="row-actions">
                       {inv.status !== "paid" && (
-                        <button
-                          className="btn-icon"
-                          title="Mark paid"
-                          disabled={busyId === inv.id}
-                          onClick={() => handleMarkPaid(inv.id)}
-                        >
-                          <Check size={14} />
-                        </button>
+                        <>
+                          <button
+                            className="btn-icon"
+                            title="Generate Follow-up Email"
+                            onClick={() => setFollowUpInvoice(inv)}
+                          >
+                            <Mail size={14} />
+                          </button>
+                          <button
+                            className="btn-icon"
+                            title="Mark paid"
+                            disabled={busyId === inv.id}
+                            onClick={() => handleMarkPaid(inv.id)}
+                          >
+                            <Check size={14} />
+                          </button>
+                        </>
                       )}
                       <button
                         className="btn-icon"
@@ -185,6 +196,12 @@ export default function Invoices() {
           </div>
         </div>
       </div>
+
+      <InvoiceFollowUpModal
+        isOpen={!!followUpInvoice}
+        onClose={() => setFollowUpInvoice(null)}
+        invoice={followUpInvoice}
+      />
     </div>
   );
 }

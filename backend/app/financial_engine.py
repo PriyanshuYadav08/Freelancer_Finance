@@ -458,6 +458,7 @@ def _invoice_out(inv: models.Invoice):
         "invoice_number": f"#{inv.invoice_number}",
         "client_id": inv.client_id,
         "client_name": inv.client.name if inv.client else "Unknown",
+        "project_id": inv.project_id,
         "project_name": inv.project_name,
         "amount": inv.amount,
         "status": invoice_display_status(inv),
@@ -595,7 +596,8 @@ def _next_invoice_number(db: Session, user_id: Optional[int] = None) -> int:
 
 
 def create_invoice(db: Session, client_id: int, project_name: str, amount: float,
-                    issue_date: date, due_date: date, status: str = "sent", user_id: Optional[int] = None) -> dict:
+                    issue_date: date, due_date: date, status: str = "sent",
+                    project_id: Optional[int] = None, user_id: Optional[int] = None) -> dict:
     q_client = db.query(models.Client).filter(models.Client.id == client_id)
     if user_id is not None:
         q_client = q_client.filter(models.Client.user_id == user_id)
@@ -606,6 +608,7 @@ def create_invoice(db: Session, client_id: int, project_name: str, amount: float
         user_id=user_id,
         invoice_number=_next_invoice_number(db, user_id=user_id),
         client_id=client_id,
+        project_id=project_id,
         project_name=project_name,
         amount=amount,
         issue_date=issue_date,
@@ -676,3 +679,259 @@ def create_client(db: Session, name: str, pay_probability: float = 0.8,
     db.commit()
     db.refresh(client)
     return client
+
+
+# ---------------------------------------------------------------------------
+# User Settings & Profile
+# ---------------------------------------------------------------------------
+
+def get_user_settings(db: Session, user_id: Optional[int] = None) -> dict:
+    if user_id is None:
+        return {
+            "business_name": "Solo Business",
+            "currency_symbol": "₹",
+            "tax_rate_pct": 15.0,
+            "target_buffer_months": 6.0,
+            "target_hourly_rate": 1500.0,
+        }
+    settings = db.query(models.UserSettings).filter(models.UserSettings.user_id == user_id).first()
+    if not settings:
+        settings = models.UserSettings(user_id=user_id)
+        db.add(settings)
+        db.commit()
+        db.refresh(settings)
+    return {
+        "business_name": settings.business_name,
+        "currency_symbol": settings.currency_symbol,
+        "tax_rate_pct": settings.tax_rate_pct,
+        "target_buffer_months": settings.target_buffer_months,
+        "target_hourly_rate": settings.target_hourly_rate,
+    }
+
+
+def update_user_settings(db: Session, user_id: Optional[int], updates: dict) -> dict:
+    if user_id is None:
+        return get_user_settings(db)
+    settings = db.query(models.UserSettings).filter(models.UserSettings.user_id == user_id).first()
+    if not settings:
+        settings = models.UserSettings(user_id=user_id)
+        db.add(settings)
+
+    for key, val in updates.items():
+        if val is not None and hasattr(settings, key):
+            setattr(settings, key, val)
+    db.commit()
+    db.refresh(settings)
+    return get_user_settings(db, user_id)
+
+
+# ---------------------------------------------------------------------------
+# Projects
+# ---------------------------------------------------------------------------
+
+def get_project_list(db: Session, user_id: Optional[int] = None):
+    q = db.query(models.Project)
+    if user_id is not None:
+        q = q.filter(models.Project.user_id == user_id)
+    projects = q.all()
+    out = []
+    for p in projects:
+        invoices = db.query(models.Invoice).filter(models.Invoice.project_id == p.id).all()
+        invoiced_total = sum(i.amount for i in invoices)
+        effective_rate = round(invoiced_total / p.hours_logged, 2) if p.hours_logged > 0 else p.target_hourly_rate
+        out.append({
+            "id": p.id,
+            "client_id": p.client_id,
+            "client_name": p.client.name if p.client else "Unassigned",
+            "name": p.name,
+            "budget": p.budget,
+            "hours_logged": p.hours_logged,
+            "target_hourly_rate": p.target_hourly_rate,
+            "status": p.status,
+            "deadline": p.deadline.isoformat() if p.deadline else None,
+            "effective_hourly_rate": effective_rate,
+            "invoiced_total": invoiced_total,
+        })
+    return out
+
+
+def create_project(db: Session, name: str, budget: float = 0.0, hours_logged: float = 0.0,
+                   target_hourly_rate: float = 1500.0, status: str = "in_progress",
+                   deadline: Optional[date] = None, client_id: Optional[int] = None,
+                   user_id: Optional[int] = None) -> dict:
+    proj = models.Project(
+        user_id=user_id, client_id=client_id, name=name, budget=budget,
+        hours_logged=hours_logged, target_hourly_rate=target_hourly_rate,
+        status=status, deadline=deadline
+    )
+    db.add(proj)
+    db.commit()
+    db.refresh(proj)
+    return {
+        "id": proj.id,
+        "client_id": proj.client_id,
+        "client_name": proj.client.name if proj.client else "Unassigned",
+        "name": proj.name,
+        "budget": proj.budget,
+        "hours_logged": proj.hours_logged,
+        "target_hourly_rate": proj.target_hourly_rate,
+        "status": proj.status,
+        "deadline": proj.deadline.isoformat() if proj.deadline else None,
+        "effective_hourly_rate": proj.target_hourly_rate,
+        "invoiced_total": 0.0,
+    }
+
+
+def update_project(db: Session, project_id: int, updates: dict, user_id: Optional[int] = None) -> Optional[dict]:
+    q = db.query(models.Project).filter(models.Project.id == project_id)
+    if user_id is not None:
+        q = q.filter(models.Project.user_id == user_id)
+    proj = q.first()
+    if not proj:
+        return None
+
+    for key, val in updates.items():
+        if hasattr(proj, key):
+            setattr(proj, key, val)
+
+    db.commit()
+    db.refresh(proj)
+
+    invoices = db.query(models.Invoice).filter(models.Invoice.project_id == proj.id).all()
+    invoiced_total = sum(inv.amount for inv in invoices)
+    effective_rate = round(invoiced_total / proj.hours_logged, 2) if proj.hours_logged > 0 else proj.target_hourly_rate
+
+    return {
+        "id": proj.id,
+        "client_id": proj.client_id,
+        "client_name": proj.client.name if proj.client else "Unassigned",
+        "name": proj.name,
+        "budget": proj.budget,
+        "hours_logged": proj.hours_logged,
+        "target_hourly_rate": proj.target_hourly_rate,
+        "status": proj.status,
+        "deadline": proj.deadline.isoformat() if proj.deadline else None,
+        "effective_hourly_rate": effective_rate,
+        "invoiced_total": invoiced_total,
+    }
+
+
+def delete_project(db: Session, project_id: int, user_id: Optional[int] = None) -> bool:
+    q = db.query(models.Project).filter(models.Project.id == project_id)
+    if user_id is not None:
+        q = q.filter(models.Project.user_id == user_id)
+    proj = q.first()
+    if not proj:
+        return False
+    db.delete(proj)
+    db.commit()
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Goals
+# ---------------------------------------------------------------------------
+
+def get_goal_list(db: Session, user_id: Optional[int] = None):
+    q = db.query(models.Goal)
+    if user_id is not None:
+        q = q.filter(models.Goal.user_id == user_id)
+    goals = q.all()
+    out = []
+    for g in goals:
+        pct = round(min(100.0, (g.current_amount / g.target_amount) * 100), 1) if g.target_amount > 0 else 0.0
+        remaining = round(max(0.0, g.target_amount - g.current_amount), 2)
+        out.append({
+            "id": g.id,
+            "name": g.name,
+            "category": g.category,
+            "target_amount": g.target_amount,
+            "current_amount": g.current_amount,
+            "target_date": g.target_date.isoformat() if g.target_date else None,
+            "progress_pct": pct,
+            "remaining_amount": remaining,
+        })
+    return out
+
+
+def create_goal(db: Session, name: str, category: str, target_amount: float,
+                current_amount: float = 0.0, target_date: Optional[date] = None,
+                user_id: Optional[int] = None) -> dict:
+    goal = models.Goal(
+        user_id=user_id, name=name, category=category,
+        target_amount=target_amount, current_amount=current_amount,
+        target_date=target_date,
+    )
+    db.add(goal)
+    db.commit()
+    db.refresh(goal)
+    pct = round(min(100.0, (goal.current_amount / goal.target_amount) * 100), 1) if goal.target_amount > 0 else 0.0
+    return {
+        "id": goal.id,
+        "name": goal.name,
+        "category": goal.category,
+        "target_amount": goal.target_amount,
+        "current_amount": goal.current_amount,
+        "target_date": goal.target_date.isoformat() if goal.target_date else None,
+        "progress_pct": pct,
+        "remaining_amount": max(0.0, goal.target_amount - goal.current_amount),
+    }
+
+
+def delete_goal(db: Session, goal_id: int, user_id: Optional[int] = None) -> bool:
+    q = db.query(models.Goal).filter(models.Goal.id == goal_id)
+    if user_id is not None:
+        q = q.filter(models.Goal.user_id == user_id)
+    g = q.first()
+    if not g:
+        return False
+    db.delete(g)
+    db.commit()
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Tax Analysis & Deductions
+# ---------------------------------------------------------------------------
+
+def get_tax_analysis(db: Session, user_id: Optional[int] = None) -> dict:
+    today = date.today()
+    q_paid = db.query(models.Invoice).filter(
+        models.Invoice.status == "paid",
+        models.Invoice.paid_date >= today - timedelta(days=30),
+    )
+    if user_id is not None:
+        q_paid = q_paid.filter(models.Invoice.user_id == user_id)
+    taxable_income = sum(i.amount for i in q_paid.all())
+
+    q_exp = db.query(models.Expense).filter(
+        models.Expense.date >= today - timedelta(days=30),
+    )
+    if user_id is not None:
+        q_exp = q_exp.filter(models.Expense.user_id == user_id)
+    expenses = q_exp.all()
+
+    deductible_categories = ["software", "equipment", "rent", "utilities", "professional development"]
+    deductible_total = sum(e.amount for e in expenses if e.category.lower() in deductible_categories)
+
+    net_taxable = max(0.0, taxable_income - deductible_total)
+    standard_reserve = round(net_taxable * TAX_RATE, 2)
+
+    presumptive_income = taxable_income * 0.5
+    presumptive_reserve = round(presumptive_income * TAX_RATE, 2)
+
+    breakdown_dict = {}
+    for e in expenses:
+        cat = e.category.capitalize()
+        breakdown_dict[cat] = breakdown_dict.get(cat, 0.0) + e.amount
+    breakdown = [{"category": k, "total_amount": round(v, 2)} for k, v in breakdown_dict.items()]
+
+    return {
+        "taxable_income_30d": round(taxable_income, 2),
+        "deductible_expenses_30d": round(deductible_total, 2),
+        "standard_tax_reserve": standard_reserve,
+        "presumptive_44ada_tax_reserve": presumptive_reserve,
+        "recommended_reserve": min(standard_reserve, presumptive_reserve),
+        "deductions_breakdown": breakdown,
+    }
+

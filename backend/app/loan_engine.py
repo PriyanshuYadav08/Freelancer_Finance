@@ -2,9 +2,7 @@
 Loan Engine
 ===========
 Standard reducing-balance EMI math, plus a missed-payment consequence
-simulator. Every figure here is a deterministic formula or a clearly
-labeled assumption (penal rate, catch-up window) - there is no LLM
-involved in these numbers.
+simulator and month-by-month amortization schedule generator.
 """
 import calendar
 from datetime import date
@@ -126,6 +124,50 @@ def simulate_missed_emis(db: Session, loan: models.Loan, missed_months: int, cat
         "risk": risk,
         "projected_arrears_if_ignored_3mo": projected_if_ignored,
         "actions": actions,
+    }
+
+
+def get_amortization_schedule(db: Session, loan_id: int, user_id: Optional[int] = None) -> dict:
+    q = db.query(models.Loan).filter(models.Loan.id == loan_id)
+    if user_id is not None:
+        q = q.filter(models.Loan.user_id == user_id)
+    loan = q.first()
+    if not loan:
+        return None
+
+    emi = fe.calc_emi(loan.principal, loan.annual_rate, loan.tenure_months)
+    r = (loan.annual_rate / 12.0) / 100.0
+
+    balance = loan.principal
+    schedule = []
+    total_interest = 0.0
+    start_dt = loan.start_date
+
+    for m in range(1, loan.tenure_months + 1):
+        interest = round(balance * r, 2)
+        principal_part = round(min(balance, emi - interest), 2)
+        balance = round(max(0.0, balance - principal_part), 2)
+        total_interest += interest
+        pay_date = fe._add_months(start_dt, m - 1)
+
+        schedule.append({
+            "month_number": m,
+            "date": pay_date.isoformat(),
+            "emi": emi,
+            "principal_paid": principal_part,
+            "interest_paid": interest,
+            "remaining_balance": balance,
+        })
+
+    return {
+        "loan_id": loan.id,
+        "loan_name": loan.name,
+        "principal": loan.principal,
+        "annual_rate": loan.annual_rate,
+        "tenure_months": loan.tenure_months,
+        "total_interest": round(total_interest, 2),
+        "total_payment": round(loan.principal + total_interest, 2),
+        "schedule": schedule,
     }
 
 

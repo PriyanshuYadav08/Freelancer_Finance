@@ -160,3 +160,48 @@ export function deleteLoan(id) {
 export function simulateLoan(id, payload) {
   return request(`/api/loans/${id}/simulate`, { method: "POST", body: JSON.stringify(payload) });
 }
+
+// v2 Extensions
+export function getSettings() {
+  return request("/api/settings");
+}
+
+export function updateSettings(payload) {
+  return request("/api/settings", { method: "PATCH", body: JSON.stringify(payload) });
+}
+
+export function getProjects() {
+  return request("/api/projects");
+}
+
+export function createProject(payload) {
+  return request("/api/projects", { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function updateProject(id, payload) {
+  return request(`/api/projects/${id}`, { method: "PATCH", body: JSON.stringify(payload) });
+}
+
+export function deleteProject(id) {
+  return request(`/api/projects/${id}`, { method: "DELETE" });
+}
+
+export function getGoals() {
+  return request("/api/goals");
+}
+
+export function createGoal(payload) {
+  return request("/api/goals", { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function deleteGoal(id) {
+  return request(`/api/goals/${id}`, { method: "DELETE" });
+}
+
+export function getTaxAnalysis() {
+  return request("/api/tax/analysis");
+}
+
+export function getLoanAmortization(id) {
+  return request(`/api/loans/${id}/amortization`);
+}

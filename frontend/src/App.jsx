@@ -16,7 +16,10 @@ import Insights from "./pages/Insights.jsx";
 import Expenses from "./pages/Expenses.jsx";
 import Loans from "./pages/Loans.jsx";
 import Tax from "./pages/Tax.jsx";
-import ComingSoon from "./pages/ComingSoon.jsx";
+import Projects from "./pages/Projects.jsx";
+import Goals from "./pages/Goals.jsx";
+import SettingsPage from "./pages/SettingsPage.jsx";
+import RateCalculator from "./pages/RateCalculator.jsx";
 
 function ProtectedRoute({ children }) {
   const { token, loading } = useAuth();
@@ -57,6 +60,7 @@ export default function App() {
           <Route path="/cash-flow" element={<CashFlow />} />
           <Route path="/clients" element={<Clients />} />
           <Route path="/clients/:id" element={<ClientDetail />} />
+          <Route path="/projects" element={<Projects />} />
           <Route path="/invoices" element={<Invoices />} />
           <Route path="/ai-cfo" element={<AICFO />} />
           <Route path="/forecasts" element={<CashFlow />} />
@@ -65,9 +69,9 @@ export default function App() {
           <Route path="/expenses" element={<Expenses />} />
           <Route path="/loans" element={<Loans />} />
           <Route path="/tax" element={<Tax />} />
-          <Route path="/goals" element={<ComingSoon eyebrow="GOALS" title="Goals" note="Goal tracking isn't built in the v1 MVP yet — see the README for what's planned next." />} />
-          <Route path="/projects" element={<ComingSoon eyebrow="PROJECTS" title="Projects" note="Project-level tracking isn't built in the v1 MVP yet — see the README for what's planned next." />} />
-          <Route path="/settings" element={<ComingSoon eyebrow="SETTINGS" title="Settings" note="Account settings aren't built in the v1 MVP yet — see the README for what's planned next." />} />
+          <Route path="/goals" element={<Goals />} />
+          <Route path="/rate-calculator" element={<RateCalculator />} />
+          <Route path="/settings" element={<SettingsPage />} />
         </Route>
 
         {/* 404 Catch-All Route for invalid URLs (e.g. /api_page) */}

@@ -2,7 +2,7 @@ import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import {
   LayoutDashboard, Wallet, Users, FolderKanban, FileText,
   Sparkles, LineChart, FlaskConical, Lightbulb,
-  Receipt, Percent, Target, Landmark, Settings, Search, Bell, LogOut,
+  Receipt, Percent, Target, Landmark, Settings, Search, Bell, LogOut, Calculator,
 } from "lucide-react";
 import { useAuth } from "../context/AuthContext.jsx";
 import "./Layout.css";
@@ -34,6 +34,7 @@ const NAV_GROUPS = [
       { to: "/loans", label: "Loans", icon: Landmark, eyebrow: "LOANS" },
       { to: "/tax", label: "Tax", icon: Percent, eyebrow: "TAX" },
       { to: "/goals", label: "Goals", icon: Target, eyebrow: "GOALS" },
+      { to: "/rate-calculator", label: "Rate Calculator", icon: Calculator, eyebrow: "RATE CALCULATOR" },
     ],
   },
 ];

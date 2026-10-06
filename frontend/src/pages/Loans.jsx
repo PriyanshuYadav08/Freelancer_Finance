@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Plus, Trash2, AlertTriangle, Minus } from "lucide-react";
 import { getLoans, deleteLoan, updateLoanMissedEmis, simulateLoan } from "../api.js";
 import LoanModal from "../components/LoanModal.jsx";
+import AmortizationModal from "../components/AmortizationModal.jsx";
 import "./Loans.css";
 
 const inr = (n) => `₹${Math.round(n).toLocaleString("en-IN")}`;
@@ -11,6 +12,7 @@ export default function Loans() {
   const [error, setError] = useState(null);
   const [showAddLoan, setShowAddLoan] = useState(false);
   const [selectedId, setSelectedId] = useState(null);
+  const [amortizationLoan, setAmortizationLoan] = useState(null);
 
   function reload() {
     return getLoans()
@@ -81,6 +83,18 @@ export default function Loans() {
                 <span>Outstanding: <span className="mono">{inr(loan.outstanding_balance)}</span></span>
                 <span>{loan.months_remaining} mo left</span>
               </div>
+              <div style={{ marginTop: "8px" }}>
+                <button
+                  className="btn btn-secondary"
+                  style={{ width: "100%", fontSize: "12px", padding: "6px" }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setAmortizationLoan(loan);
+                  }}
+                >
+                  View Amortization Schedule
+                </button>
+              </div>
               {loan.missed_emis > 0 && (
                 <div className="loan-missed-badge">
                   <AlertTriangle size={12} /> {loan.missed_emis} missed EMI{loan.missed_emis > 1 ? "s" : ""} · ₹{loan.arrears.total_arrears.toLocaleString("en-IN")} arrears
@@ -93,6 +107,14 @@ export default function Loans() {
 
       {selected && (
         <MissedEmiSimulator loan={selected} onLoanChanged={() => reload()} />
+      )}
+
+      {amortizationLoan && (
+        <AmortizationModal
+          isOpen={!!amortizationLoan}
+          onClose={() => setAmortizationLoan(null)}
+          loan={amortizationLoan}
+        />
       )}
     </div>
   );

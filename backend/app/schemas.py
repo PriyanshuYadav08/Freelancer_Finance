@@ -2,8 +2,22 @@ from pydantic import BaseModel
 from typing import List, Optional, Dict
 
 class UserCreate(BaseModel):
-  email: str
-  password: str
+    email: str
+    password: str
+
+class UserSettingsOut(BaseModel):
+    business_name: str
+    currency_symbol: str
+    tax_rate_pct: float
+    target_buffer_months: float
+    target_hourly_rate: float
+
+class UserSettingsUpdate(BaseModel):
+    business_name: Optional[str] = None
+    currency_symbol: Optional[str] = None
+    tax_rate_pct: Optional[float] = None
+    target_buffer_months: Optional[float] = None
+    target_hourly_rate: Optional[float] = None
 
 class ClientOut(BaseModel):
     id: int
@@ -106,6 +120,7 @@ class InvoiceOut(BaseModel):
     invoice_number: str
     client_id: int
     client_name: str
+    project_id: Optional[int] = None
     project_name: str
     amount: float
     status: str
@@ -165,21 +180,108 @@ class CashflowForecastOut(BaseModel):
     monthly_net: List[MonthlyNet]
 
 
-# ---------------------------------------------------------------------------
-# Writes: invoices, income, clients
-# ---------------------------------------------------------------------------
+# Projects
+class ProjectCreate(BaseModel):
+    client_id: Optional[int] = None
+    name: str
+    budget: float = 0.0
+    hours_logged: float = 0.0
+    target_hourly_rate: float = 1500.0
+    status: str = "in_progress"  # in_progress | completed | on_hold
+    deadline: Optional[str] = None
 
+
+class ProjectUpdate(BaseModel):
+    client_id: Optional[int] = None
+    name: Optional[str] = None
+    budget: Optional[float] = None
+    hours_logged: Optional[float] = None
+    target_hourly_rate: Optional[float] = None
+    status: Optional[str] = None
+    deadline: Optional[str] = None
+
+
+class ProjectOut(BaseModel):
+    id: int
+    client_id: Optional[int] = None
+    client_name: str = "Unassigned"
+    name: str
+    budget: float
+    hours_logged: float
+    target_hourly_rate: float
+    status: str
+    deadline: Optional[str] = None
+    effective_hourly_rate: float
+    invoiced_total: float
+
+
+# Goals
+class GoalCreate(BaseModel):
+    name: str
+    category: str = "emergency_fund"
+    target_amount: float
+    current_amount: float = 0.0
+    target_date: Optional[str] = None
+
+
+class GoalOut(BaseModel):
+    id: int
+    name: str
+    category: str
+    target_amount: float
+    current_amount: float
+    target_date: Optional[str] = None
+    progress_pct: float
+    remaining_amount: float
+
+
+# Tax Analysis
+class TaxDeductionItem(BaseModel):
+    category: str
+    total_amount: float
+
+class TaxAnalysisOut(BaseModel):
+    taxable_income_30d: float
+    deductible_expenses_30d: float
+    standard_tax_reserve: float
+    presumptive_44ada_tax_reserve: float
+    recommended_reserve: float
+    deductions_breakdown: List[TaxDeductionItem]
+
+
+# Amortization Schedule
+class AmortizationScheduleEntry(BaseModel):
+    month_number: int
+    date: str
+    emi: float
+    principal_paid: float
+    interest_paid: float
+    remaining_balance: float
+
+class AmortizationScheduleOut(BaseModel):
+    loan_id: int
+    loan_name: str
+    principal: float
+    annual_rate: float
+    tenure_months: int
+    total_interest: float
+    total_payment: float
+    schedule: List[AmortizationScheduleEntry]
+
+
+# Writes: invoices, income, clients
 class InvoiceCreate(BaseModel):
     client_id: int
+    project_id: Optional[int] = None
     project_name: str
     amount: float
-    issue_date: str   # ISO date string, e.g. "2026-09-02"
+    issue_date: str
     due_date: str
-    status: str = "sent"  # draft | sent | paid
+    status: str = "sent"
 
 
 class InvoiceStatusUpdate(BaseModel):
-    status: str  # draft | sent | paid
+    status: str
     paid_date: Optional[str] = None
 
 
@@ -202,10 +304,7 @@ class ClientCreated(BaseModel):
     name: str
 
 
-# ---------------------------------------------------------------------------
 # Loans
-# ---------------------------------------------------------------------------
-
 class LoanCreate(BaseModel):
     name: str
     principal: float

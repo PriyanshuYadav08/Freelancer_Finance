@@ -37,6 +37,16 @@ from .schemas import (
 from .seed import seed
 
 Base.metadata.create_all(bind=engine)
+
+# Migration helper for SQLite schema evolution
+with engine.connect() as conn:
+    try:
+        from sqlalchemy import text
+        conn.execute(text("ALTER TABLE invoices ADD COLUMN project_id INTEGER REFERENCES projects(id)"))
+        conn.commit()
+    except Exception:
+        pass
+
 seed()
 
 app = FastAPI(title="Freelancer Financial OS API")
@@ -394,6 +404,146 @@ def simulate_loan(
         req.catchup_months,
         user_id=user_id,
     )
+
+
+@app.get("/api/settings", response_model=schemas.UserSettingsOut)
+def get_settings(
+    db: Session = Depends(get_db),
+    current_user: Optional[models.User] = Depends(auth.get_optional_current_user),
+):
+    user_id = current_user.id if current_user else None
+    return fe.get_user_settings(db, user_id=user_id)
+
+
+@app.patch("/api/settings", response_model=schemas.UserSettingsOut)
+def update_settings(
+    req: schemas.UserSettingsUpdate,
+    db: Session = Depends(get_db),
+    current_user: Optional[models.User] = Depends(auth.get_optional_current_user),
+):
+    user_id = current_user.id if current_user else None
+    return fe.update_user_settings(db, user_id=user_id, updates=req.dict(exclude_unset=True))
+
+
+@app.get("/api/projects", response_model=list[schemas.ProjectOut])
+def get_projects(
+    db: Session = Depends(get_db),
+    current_user: Optional[models.User] = Depends(auth.get_optional_current_user),
+):
+    user_id = current_user.id if current_user else None
+    return fe.get_project_list(db, user_id=user_id)
+
+
+@app.post("/api/projects", response_model=schemas.ProjectOut)
+def create_project(
+    req: schemas.ProjectCreate,
+    db: Session = Depends(get_db),
+    current_user: Optional[models.User] = Depends(auth.get_optional_current_user),
+):
+    user_id = current_user.id if current_user else None
+    deadline_date = _parse_date(req.deadline) if req.deadline else None
+    return fe.create_project(
+        db,
+        name=req.name,
+        budget=req.budget,
+        hours_logged=req.hours_logged,
+        target_hourly_rate=req.target_hourly_rate,
+        status=req.status,
+        deadline=deadline_date,
+        client_id=req.client_id,
+        user_id=user_id,
+    )
+
+
+@app.patch("/api/projects/{project_id}", response_model=schemas.ProjectOut)
+def update_project(
+    project_id: int,
+    req: schemas.ProjectUpdate,
+    db: Session = Depends(get_db),
+    current_user: Optional[models.User] = Depends(auth.get_optional_current_user),
+):
+    user_id = current_user.id if current_user else None
+    updates = req.dict(exclude_unset=True)
+    if "deadline" in updates and isinstance(updates["deadline"], str):
+        updates["deadline"] = _parse_date(updates["deadline"])
+    updated = fe.update_project(db, project_id, updates, user_id=user_id)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return updated
+
+
+@app.delete("/api/projects/{project_id}")
+def delete_project(
+    project_id: int,
+    db: Session = Depends(get_db),
+    current_user: Optional[models.User] = Depends(auth.get_optional_current_user),
+):
+    user_id = current_user.id if current_user else None
+    if not fe.delete_project(db, project_id, user_id=user_id):
+        raise HTTPException(status_code=404, detail="Project not found")
+    return {"deleted": True}
+
+
+@app.get("/api/goals", response_model=list[schemas.GoalOut])
+def get_goals(
+    db: Session = Depends(get_db),
+    current_user: Optional[models.User] = Depends(auth.get_optional_current_user),
+):
+    user_id = current_user.id if current_user else None
+    return fe.get_goal_list(db, user_id=user_id)
+
+
+@app.post("/api/goals", response_model=schemas.GoalOut)
+def create_goal(
+    req: schemas.GoalCreate,
+    db: Session = Depends(get_db),
+    current_user: Optional[models.User] = Depends(auth.get_optional_current_user),
+):
+    user_id = current_user.id if current_user else None
+    target_dt = _parse_date(req.target_date) if req.target_date else None
+    return fe.create_goal(
+        db,
+        name=req.name,
+        category=req.category,
+        target_amount=req.target_amount,
+        current_amount=req.current_amount,
+        target_date=target_dt,
+        user_id=user_id,
+    )
+
+
+@app.delete("/api/goals/{goal_id}")
+def delete_goal(
+    goal_id: int,
+    db: Session = Depends(get_db),
+    current_user: Optional[models.User] = Depends(auth.get_optional_current_user),
+):
+    user_id = current_user.id if current_user else None
+    if not fe.delete_goal(db, goal_id, user_id=user_id):
+        raise HTTPException(status_code=404, detail="Goal not found")
+    return {"deleted": True}
+
+
+@app.get("/api/tax/analysis", response_model=schemas.TaxAnalysisOut)
+def tax_analysis(
+    db: Session = Depends(get_db),
+    current_user: Optional[models.User] = Depends(auth.get_optional_current_user),
+):
+    user_id = current_user.id if current_user else None
+    return fe.get_tax_analysis(db, user_id=user_id)
+
+
+@app.get("/api/loans/{loan_id}/amortization", response_model=schemas.AmortizationScheduleOut)
+def loan_amortization(
+    loan_id: int,
+    db: Session = Depends(get_db),
+    current_user: Optional[models.User] = Depends(auth.get_optional_current_user),
+):
+    user_id = current_user.id if current_user else None
+    res = loan_engine.get_amortization_schedule(db, loan_id, user_id=user_id)
+    if not res:
+        raise HTTPException(status_code=404, detail="Loan not found")
+    return res
 
 
 @app.get("/api/health")
